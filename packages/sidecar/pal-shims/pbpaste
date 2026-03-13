@@ -1,0 +1,5 @@
+#!/bin/bash
+# PAL shim for macOS 'pbpaste' command
+# Reads clipboard content from host
+
+paddock-host-tool clipboard.read

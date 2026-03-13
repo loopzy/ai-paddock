@@ -1,0 +1,28 @@
+{
+  "name": "paddock",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Secure runtime with MicroVM isolation and time-travel rollback for AI agents",
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev:control": "pnpm --filter @paddock/control-plane dev",
+    "dev:dashboard": "pnpm --filter @paddock/dashboard dev",
+    "build": "node scripts/run-local-cli.mjs turbo/bin/turbo run build",
+    "build:openclaw-runtime": "./scripts/build-openclaw-runtime.sh",
+    "prepare:node-runtime": "scripts/prepare-node-runtime.sh",
+    "prepare:simplebox-rootfs": "node scripts/prepare-sandbox-rootfs.mjs simple-box",
+    "prepare:computerbox-rootfs": "node scripts/prepare-sandbox-rootfs.mjs computer-box",
+    "prepare:sandbox-rootfs": "node scripts/prepare-sandbox-rootfs.mjs",
+    "lint": "node scripts/run-local-cli.mjs turbo/bin/turbo run lint",
+    "clean": "node scripts/run-local-cli.mjs turbo/bin/turbo run clean",
+    "test": "pnpm run test:unit && pnpm run test:python",
+    "test:unit": "node scripts/run-local-cli.mjs vitest/vitest.mjs run",
+    "test:python": "PYTHONPATH=packages/amp-openclaw python3 -m unittest discover -s packages/amp-openclaw/paddock_amp/__tests__ -p 'test_*.py'",
+    "test:e2e": "node scripts/run-local-cli.mjs vitest/vitest.mjs run --config vitest.e2e.config.ts"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.0"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "paddock-amp",
+  "name": "Paddock AMP Bridge",
+  "description": "Bridges OpenClaw tool lifecycle hooks into the Paddock AMP Gate and event pipeline.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "sidecarUrl": {
+        "type": "string"
+      },
+      "workspaceRoot": {
+        "type": "string"
+      },
+      "logFile": {
+        "type": "string"
+      }
+    }
+  }
+}

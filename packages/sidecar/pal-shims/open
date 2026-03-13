@@ -1,0 +1,18 @@
+#!/bin/bash
+# PAL shim for macOS 'open' command
+# Translates to Linux equivalent: xdg-open
+
+case "$1" in
+  http://*|https://*)
+    # URL: delegate to host browser via MCP
+    paddock-host-tool browser.open "$1"
+    ;;
+  *.html|*.htm)
+    # HTML file: delegate to host browser
+    paddock-host-tool browser.open "file://$(realpath "$1")"
+    ;;
+  *)
+    # Other files: use Linux xdg-open
+    xdg-open "$@"
+    ;;
+esac

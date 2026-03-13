@@ -1,0 +1,5 @@
+#!/bin/bash
+# PAL shim for macOS 'pbcopy' command
+# Copies stdin to clipboard via host delegation
+
+paddock-host-tool clipboard.write "$(cat)"

@@ -1,0 +1,5 @@
+#!/bin/bash
+# PAL shim for macOS 'osascript' command
+# AppleScript execution - delegate to host
+
+paddock-host-tool applescript.run "$@"

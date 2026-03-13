@@ -1,0 +1,5 @@
+#!/bin/bash
+# PAL shim for macOS 'say' command
+# Text-to-speech via host delegation
+
+paddock-host-tool tts.speak "$*"

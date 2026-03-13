@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paddock-amp"
+version = "0.1.0"
+description = "Paddock AMP adapter for OpenClaw"
+requires-python = ">=3.10"
+dependencies = ["requests>=2.31.0", "playwright>=1.48.0,<2"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]

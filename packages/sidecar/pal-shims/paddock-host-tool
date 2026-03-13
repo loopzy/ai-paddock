@@ -1,0 +1,55 @@
+#!/usr/bin/env node
+/**
+ * paddock-host-tool — CLI for calling host-side MCP tools from within VM.
+ *
+ * Usage: paddock-host-tool <tool.name> [args...]
+ *
+ * Sends MCP request to Control Plane's MCP Gateway via HTTP.
+ */
+
+const CONTROL_URL = process.env.PADDOCK_CONTROL_URL ?? 'http://host.internal:3100';
+const SESSION_ID = process.env.PADDOCK_SESSION_ID ?? '';
+
+async function main() {
+  const [toolName, ...args] = process.argv.slice(2);
+
+  if (!toolName) {
+    console.error('Usage: paddock-host-tool <tool.name> [args...]');
+    process.exit(1);
+  }
+
+  if (!SESSION_ID) {
+    console.error('PADDOCK_SESSION_ID not set');
+    process.exit(1);
+  }
+
+  try {
+    const response = await fetch(`${CONTROL_URL}/api/sessions/${SESSION_ID}/mcp/call`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tool: toolName,
+        args: args.length === 1 ? args[0] : args,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(`Host tool call failed: ${response.statusText}`);
+      process.exit(1);
+    }
+
+    const result = await response.json();
+    if (result.stdout) {
+      process.stdout.write(result.stdout);
+    }
+    if (result.stderr) {
+      process.stderr.write(result.stderr);
+    }
+    process.exit(result.exitCode ?? 0);
+  } catch (err) {
+    console.error('Failed to call host tool:', err);
+    process.exit(1);
+  }
+}
+
+main();

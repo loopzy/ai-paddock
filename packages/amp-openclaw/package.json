@@ -1,0 +1,16 @@
+{
+  "name": "@paddock/amp-openclaw",
+  "version": "0.1.0",
+  "description": "AMP adapter for OpenClaw-compatible agents",
+  "type": "module",
+  "scripts": {
+    "build": "bash build.sh",
+    "test": "PYTHONPATH=. python3 -m pytest paddock_amp/__tests__/ -v"
+  },
+  "keywords": ["paddock", "amp", "openclaw", "agent"],
+  "author": "Paddock Team",
+  "license": "MIT",
+  "turbo": {
+    "outputs": []
+  }
+}
