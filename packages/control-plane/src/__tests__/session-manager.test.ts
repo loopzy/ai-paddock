@@ -341,7 +341,7 @@ describe('SessionManager', () => {
       expect(String(launchCall?.args[1])).toContain('OPENCLAW_CONFIG_PATH=/workspace/.openclaw/openclaw.json');
       expect(String(launchCall?.args[1])).toContain('OPENCLAW_SKIP_CHANNELS=1');
       expect(String(launchCall?.args[1])).toContain('OPENCLAW_BUNDLED_PLUGINS_DIR=/opt/paddock/openclaw/paddock-amp-plugin');
-      expect(String(launchCall?.args[1])).toContain('PADDOCK_OPENCLAW_HOST_BROWSER_IS_SANDBOX=1');
+      expect(String(launchCall?.args[1])).not.toContain('PADDOCK_OPENCLAW_HOST_BROWSER_IS_SANDBOX=1');
 
       const configWriteCall = driver.calls.find(
         (call) => call.method === 'exec' && String(call.args[1]).includes('cat > /workspace/.openclaw/openclaw.json')
@@ -351,6 +351,8 @@ describe('SessionManager', () => {
       expect(String(configWriteCall?.args[1])).toContain('"contextTokens": 262144');
       expect(String(configWriteCall?.args[1])).toContain('"maxTokens": 8192');
       expect(String(configWriteCall?.args[1])).toContain('"parallelToolCalls": false');
+      expect(String(configWriteCall?.args[1])).toContain('"sandbox": {');
+      expect(String(configWriteCall?.args[1])).toContain('"mode": "off"');
       expect(String(configWriteCall?.args[1])).toContain('"noSandbox": true');
       expect(String(configWriteCall?.args[1])).toContain('"executablePath": "/usr/bin/chromium"');
       expect(String(configWriteCall?.args[1])).toContain('"baseUrl": "http://127.0.0.1:8800/openrouter/api/v1"');

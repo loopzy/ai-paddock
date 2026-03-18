@@ -91,6 +91,19 @@ function eventPayload(toolName, params, ctx) {
   };
 }
 
+function contextPayload(ctx) {
+  return {
+    runId: ctx?.runId,
+    toolCallId: ctx?.toolCallId,
+    agentId: ctx?.agentId,
+    sessionKey: ctx?.sessionKey,
+  };
+}
+
+function normalizeHookEvent(event) {
+  return event && typeof event === 'object' ? { ...event } : {};
+}
+
 function buildRiskHints(toolName, params) {
   const hints = [];
   if (['write', 'edit', 'apply_patch'].includes(toolName)) {
@@ -99,8 +112,11 @@ function buildRiskHints(toolName, params) {
   if (['exec', 'process'].includes(toolName)) {
     hints.push('process-execution');
   }
-  if (toolName === 'browser') {
+  if (['browser', 'web_fetch', 'web_search'].includes(toolName)) {
     hints.push('browser-automation');
+  }
+  if (['web_fetch', 'web_search', 'browser', 'message', 'tts', 'nodes', 'canvas'].includes(toolName)) {
+    hints.push('network-or-external-io');
   }
   const toolPath = typeof params?.path === 'string' ? params.path : '';
   if (toolPath.startsWith('/etc/')) {
@@ -124,6 +140,85 @@ function serializeResultPayload(event) {
     result: event?.result,
     durationMs: event?.durationMs,
   };
+}
+
+async function reportAmpEvent(config, log, eventType, payload, timeoutMs = 2000) {
+  try {
+    await postJson(
+      `${config.sidecarUrl}/amp/event`,
+      {
+        toolName: eventType,
+        result: JSON.stringify(payload),
+      },
+      timeoutMs,
+    );
+  } catch (error) {
+    log('amp_event:report-failed', {
+      eventType,
+      error: String(error),
+    });
+  }
+}
+
+function buildLifecyclePayload(phase, event, ctx) {
+  return {
+    phase,
+    ...contextPayload(ctx),
+    ...normalizeHookEvent(event),
+  };
+}
+
+function truncateString(value, maxChars = 300) {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, maxChars)}…`;
+}
+
+function summarizeMessage(message) {
+  if (!message || typeof message !== 'object') {
+    return undefined;
+  }
+  const role = typeof message.role === 'string' ? message.role : undefined;
+  const content = Array.isArray(message.content) ? message.content : [];
+  return {
+    role,
+    contentTypes: content
+      .map((item) => (item && typeof item === 'object' && typeof item.type === 'string' ? item.type : undefined))
+      .filter(Boolean),
+  };
+}
+
+function extractMessageText(value) {
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+
+  const content = Array.isArray(value.content) ? value.content : [];
+  const textParts = content
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return '';
+      }
+      if (item.type === 'text' && typeof item.text === 'string') {
+        return item.text;
+      }
+      return '';
+    })
+    .filter(Boolean);
+
+  return textParts.join('\n').trim();
+}
+
+async function reportTraceEvent(config, log, phase, event, ctx, timeoutMs = 2000) {
+  const payload = buildLifecyclePayload(phase, event, ctx);
+  await reportAmpEvent(config, log, 'amp.trace', payload, timeoutMs);
 }
 
 export default {
@@ -272,6 +367,151 @@ export default {
           error: String(error),
         });
       }
+    });
+
+    api.on('session_start', async (event, ctx) => {
+      const payload = buildLifecyclePayload('openclaw.session_start', event, ctx);
+      log('session_start', payload);
+      await reportAmpEvent(config, log, 'amp.session.start', payload);
+    });
+
+    api.on('session_end', async (event, ctx) => {
+      const payload = buildLifecyclePayload('openclaw.session_end', event, ctx);
+      log('session_end', payload);
+      await reportAmpEvent(config, log, 'amp.session.end', payload);
+    });
+
+    api.on('before_reset', async (event, ctx) => {
+      const payload = buildLifecyclePayload('openclaw.before_reset', event, ctx);
+      log('before_reset', payload);
+      await reportTraceEvent(config, log, 'openclaw.before_reset', event, ctx);
+    });
+
+    api.on('before_compaction', async (event, ctx) => {
+      const payload = buildLifecyclePayload('openclaw.before_compaction', event, ctx);
+      log('before_compaction', payload);
+      await reportTraceEvent(config, log, 'openclaw.before_compaction', event, ctx);
+    });
+
+    api.on('after_compaction', async (event, ctx) => {
+      const payload = buildLifecyclePayload('openclaw.after_compaction', event, ctx);
+      log('after_compaction', payload);
+      await reportTraceEvent(config, log, 'openclaw.after_compaction', event, ctx);
+    });
+
+    api.on('message_received', async (event, ctx) => {
+      const payload = buildLifecyclePayload(
+        'openclaw.message_received',
+        {
+          ...normalizeHookEvent(event),
+          content: truncateString(event?.content, 400),
+        },
+        ctx,
+      );
+      log('message_received', payload);
+      await reportTraceEvent(config, log, 'openclaw.message_received', payload, ctx);
+    });
+
+    api.on('message_sending', async (event, ctx) => {
+      const payload = buildLifecyclePayload(
+        'openclaw.message_sending',
+        {
+          ...normalizeHookEvent(event),
+          content: truncateString(event?.content, 400),
+        },
+        ctx,
+      );
+      log('message_sending', payload);
+      await reportTraceEvent(config, log, 'openclaw.message_sending', payload, ctx);
+    });
+
+    api.on('message_sent', async (event, ctx) => {
+      const payload = buildLifecyclePayload(
+        'openclaw.message_sent',
+        {
+          ...normalizeHookEvent(event),
+          content: truncateString(event?.content, 400),
+        },
+        ctx,
+      );
+      log('message_sent', payload);
+      const messageText = extractMessageText(event?.message) || extractMessageText(event?.content);
+      if (messageText) {
+        await reportAmpEvent(config, log, 'amp.agent.message', {
+          text: truncateString(messageText, 4000),
+          success: event?.success !== false,
+          runId: ctx?.runId,
+          agentId: ctx?.agentId,
+          sessionKey: ctx?.sessionKey,
+        });
+      }
+      await reportTraceEvent(config, log, 'openclaw.message_sent', payload, ctx);
+    });
+
+    api.on('subagent_spawning', async (event, ctx) => {
+      const payload = buildLifecyclePayload('openclaw.subagent_spawning', event, ctx);
+      log('subagent_spawning', payload);
+      await reportAmpEvent(config, log, 'amp.session.start', payload);
+    });
+
+    api.on('subagent_spawned', async (event, ctx) => {
+      const payload = buildLifecyclePayload('openclaw.subagent_spawned', event, ctx);
+      log('subagent_spawned', payload);
+      await reportAmpEvent(config, log, 'amp.session.start', payload);
+    });
+
+    api.on('subagent_ended', async (event, ctx) => {
+      const payload = buildLifecyclePayload('openclaw.subagent_ended', event, ctx);
+      log('subagent_ended', payload);
+      await reportAmpEvent(config, log, 'amp.session.end', payload);
+    });
+
+    api.on('subagent_delivery_target', async (event, ctx) => {
+      const payload = buildLifecyclePayload('openclaw.subagent_delivery_target', event, ctx);
+      log('subagent_delivery_target', payload);
+      await reportTraceEvent(config, log, 'openclaw.subagent_delivery_target', event, ctx);
+    });
+
+    api.on('gateway_start', async (event, ctx) => {
+      const payload = buildLifecyclePayload('openclaw.gateway_start', event, ctx);
+      log('gateway_start', payload);
+      await reportTraceEvent(config, log, 'openclaw.gateway_start', event, ctx);
+    });
+
+    api.on('gateway_stop', async (event, ctx) => {
+      const payload = buildLifecyclePayload('openclaw.gateway_stop', event, ctx);
+      log('gateway_stop', payload);
+      await reportTraceEvent(config, log, 'openclaw.gateway_stop', event, ctx);
+    });
+
+    api.on('tool_result_persist', (event, ctx) => {
+      const payload = buildLifecyclePayload(
+        'openclaw.tool_result_persist',
+        {
+          toolName: event?.toolName,
+          toolCallId: event?.toolCallId,
+          isSynthetic: event?.isSynthetic === true,
+          message: summarizeMessage(event?.message),
+        },
+        ctx,
+      );
+      log('tool_result_persist', payload);
+      void reportTraceEvent(config, log, 'openclaw.tool_result_persist', payload, ctx);
+    });
+
+    api.on('before_message_write', (event, ctx) => {
+      const payload = buildLifecyclePayload(
+        'openclaw.before_message_write',
+        {
+          blocked: false,
+          message: summarizeMessage(event?.message),
+          sessionKey: event?.sessionKey,
+          agentId: event?.agentId,
+        },
+        ctx,
+      );
+      log('before_message_write', payload);
+      void reportTraceEvent(config, log, 'openclaw.before_message_write', payload, ctx);
     });
   },
 };

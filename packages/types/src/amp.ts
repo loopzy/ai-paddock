@@ -5,6 +5,7 @@ export type AMPEventType =
   | 'amp.llm.request' | 'amp.llm.response'
   | 'amp.tool.intent' | 'amp.tool.result'
   | 'amp.thought'
+  | 'amp.trace'
   // Effect layer
   | 'amp.fs.change'
   | 'amp.net.egress'
@@ -18,6 +19,7 @@ export type AMPEventType =
   | 'amp.gate.verdict'
   // Agent Lifecycle layer
   | 'amp.agent.ready'
+  | 'amp.agent.message'
   | 'amp.agent.heartbeat'
   | 'amp.agent.error'
   | 'amp.agent.fatal'

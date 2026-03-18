@@ -147,6 +147,14 @@ describe('Control-plane boundary routes', () => {
       });
       expect(controlResponse.statusCode).toBe(400);
       expect(controlResponse.json().error).toContain('control-plane-routed');
+
+      const webResponse = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/mcp/call`,
+        payload: { toolName: 'web_fetch', args: { url: 'https://example.com' } },
+      });
+      expect(webResponse.statusCode).toBe(400);
+      expect(webResponse.json().error).toContain('sandbox-local');
     } finally {
       await ctx.app.close();
       ctx.eventStore.close();

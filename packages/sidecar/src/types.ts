@@ -27,6 +27,7 @@ export type EventType =
   | 'amp.llm.request' | 'amp.llm.response'
   | 'amp.tool.intent' | 'amp.tool.result'
   | 'amp.thought'
+  | 'amp.trace'
   | 'amp.fs.change'
   | 'amp.net.egress' | 'amp.process.spawn'
   | 'amp.session.start' | 'amp.session.end'
@@ -35,6 +36,6 @@ export type EventType =
   | 'amp.user.command'
   | 'amp.gate.verdict'
   // Agent Lifecycle
-  | 'amp.agent.ready' | 'amp.agent.heartbeat'
+  | 'amp.agent.ready' | 'amp.agent.message' | 'amp.agent.heartbeat'
   | 'amp.agent.error' | 'amp.agent.fatal'
   | 'amp.agent.exit';

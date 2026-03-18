@@ -11,47 +11,10 @@ import type { ResourceGateway } from '../boundary/resource-gateway.js';
 import type { LLMConfigStore } from '../config/llm-config-store.js';
 import type { EventType, SandboxType, ResourceRequest } from '../types.js';
 import { AGENT_LLM_PROVIDER_PRESETS, getConfiguredAgentProviders, getDefaultAgentLLMConfig, resolveAgentLLMConfig } from '../mcp/agent-llm-config.js';
-
-const SANDBOX_LOCAL_TOOL_NAMES = new Set([
-  'read',
-  'write',
-  'edit',
-  'list',
-  'apply_patch',
-  'exec',
-  'process',
-  'browser',
-  'image',
-]);
-
-const CONTROL_PLANE_TOOL_NAMES = new Set([
-  'sessions_list',
-  'sessions_history',
-  'sessions_send',
-  'sessions_spawn',
-  'sessions_yield',
-  'session_status',
-  'subagents',
-  'cron',
-  'rollback',
-]);
+import { classifyOpenClawToolBoundary } from '../agents/openclaw-operation-profile.js';
 
 function classifyToolBoundary(toolName: string): 'sandbox-local' | 'control-plane-routed' | 'mcp-external' | 'disabled' {
-  const normalized = toolName.trim().toLowerCase();
-  if (!normalized || normalized === 'gateway') return 'disabled';
-  if (SANDBOX_LOCAL_TOOL_NAMES.has(normalized)) return 'sandbox-local';
-  if (CONTROL_PLANE_TOOL_NAMES.has(normalized)) return 'control-plane-routed';
-  if (
-    normalized.startsWith('browser.') ||
-    normalized.startsWith('clipboard.') ||
-    normalized.startsWith('tts.') ||
-    normalized.startsWith('applescript.') ||
-    normalized.startsWith('channel.') ||
-    normalized.startsWith('api.')
-  ) {
-    return 'mcp-external';
-  }
-  return 'disabled';
+  return classifyOpenClawToolBoundary(toolName);
 }
 
 function parseLLMProxyError(result: { status: number; body: string }) {

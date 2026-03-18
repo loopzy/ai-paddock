@@ -623,7 +623,7 @@ export class SessionManager {
       await this.execOrThrow(
         driver,
         vmId,
-        'set -a && . /etc/environment && set +a && OPENCLAW_STATE_DIR=/workspace/.openclaw OPENCLAW_CONFIG_PATH=/workspace/.openclaw/openclaw.json OPENCLAW_GATEWAY_PORT=18789 OPENCLAW_SKIP_CHANNELS=1 OPENCLAW_BUNDLED_PLUGINS_DIR=/opt/paddock/openclaw/paddock-amp-plugin NO_PROXY=127.0.0.1,localhost PADDOCK_OPENCLAW_HOST_BROWSER_IS_SANDBOX=1 /opt/paddock/openclaw/launch.sh',
+        'set -a && . /etc/environment && set +a && OPENCLAW_STATE_DIR=/workspace/.openclaw OPENCLAW_CONFIG_PATH=/workspace/.openclaw/openclaw.json OPENCLAW_GATEWAY_PORT=18789 OPENCLAW_SKIP_CHANNELS=1 OPENCLAW_BUNDLED_PLUGINS_DIR=/opt/paddock/openclaw/paddock-amp-plugin NO_PROXY=127.0.0.1,localhost /opt/paddock/openclaw/launch.sh',
         'Failed to launch OpenClaw',
       );
 

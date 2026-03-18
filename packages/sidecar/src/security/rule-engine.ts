@@ -88,7 +88,14 @@ export function validatePath(rawPath: string, workspace: string): { safe: boolea
 /**
  * Validate a URL for outbound request safety.
  */
-export function validateUrl(url: string): { safe: boolean; risk: number; rules: string[] } {
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+}
+
+export function validateUrl(
+  url: string,
+  options?: { allowLoopback?: boolean },
+): { safe: boolean; risk: number; rules: string[] } {
   const triggered: string[] = [];
   let risk = 0;
 
@@ -105,10 +112,11 @@ export function validateUrl(url: string): { safe: boolean; risk: number; rules: 
   }
 
   const hostname = parsed.hostname.toLowerCase();
+  const loopbackAllowed = options?.allowLoopback === true && isLoopbackHost(hostname);
 
   // Block special hosts
   const blockedHosts = ['localhost', '127.0.0.1', '0.0.0.0', 'metadata.google.internal', '169.254.169.254'];
-  if (blockedHosts.includes(hostname)) {
+  if (blockedHosts.includes(hostname) && !loopbackAllowed) {
     triggered.push('blocked_host');
     risk = Math.max(risk, 90);
   }
@@ -119,6 +127,9 @@ export function validateUrl(url: string): { safe: boolean; risk: number; rules: 
   ];
   for (const pat of privateIpPatterns) {
     if (pat.test(hostname)) {
+      if (loopbackAllowed) {
+        break;
+      }
       triggered.push('private_ip');
       risk = Math.max(risk, 85);
       break;
@@ -140,6 +151,8 @@ export class RuleEngine {
       case 'exec': return this.evaluateExec(toolInput);
       case 'read': case 'write': case 'edit': return this.evaluatePath(toolInput);
       case 'web_fetch': return this.evaluateUrl(toolInput);
+      case 'web_search': return this.evaluateWebSearch(toolInput);
+      case 'browser': return this.evaluateBrowser(toolInput);
       default: return { baseRisk: 0, triggered: [] };
     }
   }
@@ -187,6 +200,23 @@ export class RuleEngine {
     const url = String(input.url ?? '');
     if (!url) return { baseRisk: 0, triggered: [] };
     const result = validateUrl(url);
+    return { baseRisk: result.risk, triggered: result.rules };
+  }
+
+  private evaluateWebSearch(input: Record<string, unknown>): RuleResult {
+    const url = String(input.url ?? input.searchUrl ?? '');
+    if (!url) return { baseRisk: 0, triggered: [] };
+    return this.evaluateUrl({ url });
+  }
+
+  private evaluateBrowser(input: Record<string, unknown>): RuleResult {
+    const action = String(input.action ?? '').toLowerCase();
+    if (!['open', 'navigate', 'goto'].includes(action)) {
+      return { baseRisk: 0, triggered: [] };
+    }
+    const url = String(input.url ?? '');
+    if (!url) return { baseRisk: 0, triggered: [] };
+    const result = validateUrl(url, { allowLoopback: true });
     return { baseRisk: result.risk, triggered: result.rules };
   }
 }

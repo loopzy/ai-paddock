@@ -59,14 +59,10 @@ describe('openclaw-config', () => {
         },
       },
     });
-    expect(config.tools).toEqual({
-      sandbox: {
-        tools: {
-          deny: ['web_*'],
-        },
-      },
-    });
     expect(config.agents.defaults.workspace).toBe('/workspace');
+    expect(config.agents.defaults.sandbox).toEqual({
+      mode: 'off',
+    });
     expect(config.agents.defaults.model.primary).toBe('openrouter/qwen/qwen-2.5-72b-instruct');
     expect(config.agents.defaults.contextTokens).toBe(32768);
     expect(config.agents.defaults.compaction).toEqual({
@@ -100,6 +96,18 @@ describe('openclaw-config', () => {
         },
       ],
     });
+    expect(config.tools).toEqual({
+      web: {
+        search: {
+          enabled: true,
+          provider: 'perplexity',
+          perplexity: {
+            baseUrl: 'http://127.0.0.1:8800/openrouter/api/v1',
+            model: 'perplexity/sonar-pro',
+          },
+        },
+      },
+    });
   });
 
   it('uses model-specific context metadata for larger OpenRouter presets', () => {
@@ -131,14 +139,5 @@ describe('openclaw-config', () => {
     expect(getOpenClawProviderProxyBaseUrl('openai', 'http://127.0.0.1:9900')).toBe(
       'http://127.0.0.1:9900/openai/v1',
     );
-  });
-
-  it('denies direct web tools so external fetching stays behind Paddock boundaries', () => {
-    const config = buildOpenClawRuntimeConfig({
-      llm: { provider: 'openrouter', model: 'moonshotai/kimi-k2' },
-      browserEnabled: true,
-    });
-
-    expect(config.tools.sandbox.tools.deny).toContain('web_*');
   });
 });

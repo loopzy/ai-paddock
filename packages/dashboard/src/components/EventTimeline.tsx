@@ -26,6 +26,13 @@ function EventDetail({ event }: { event: PaddockEvent }) {
       return <span>{p.tokensIn as number} in / {p.tokensOut as number} out · {p.durationMs as number}ms</span>;
     case 'amp.thought':
       return <span className="text-yellow-400 italic">{(p.text as string)?.slice(0, 200) ?? ''}</span>;
+    case 'amp.trace':
+      return (
+        <span>
+          <span className="text-cyan-400">{(p.phase as string) ?? 'trace'}</span>
+          <span className="text-gray-500 ml-2">{JSON.stringify(p).slice(0, 150)}</span>
+        </span>
+      );
     case 'amp.tool.intent':
       return (
         <span>
@@ -56,6 +63,8 @@ function EventDetail({ event }: { event: PaddockEvent }) {
       );
     case 'amp.agent.ready':
       return <span className="text-green-400">Agent ready: {p.agent as string} v{p.version as string}</span>;
+    case 'amp.agent.message':
+      return <span className="text-emerald-300 whitespace-pre-wrap">{((p.text as string) ?? '').slice(0, 400)}</span>;
     case 'amp.agent.heartbeat':
       return <span className="text-gray-500">uptime {p.uptime as number}s · {p.memoryMB as number}MB</span>;
     case 'amp.agent.error':

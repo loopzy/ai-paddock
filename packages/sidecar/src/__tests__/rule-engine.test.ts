@@ -106,6 +106,19 @@ describe('RuleEngine', () => {
     });
   });
 
+  describe('evaluate browser (URL)', () => {
+    it('should allow loopback browser navigation inside the VM', () => {
+      const result = engine.evaluate('browser', { action: 'navigate', url: 'http://127.0.0.1:8080/admin' });
+      expect(result.baseRisk).toBe(0);
+      expect(result.triggered).toEqual([]);
+    });
+
+    it('should allow public browser navigation', () => {
+      const result = engine.evaluate('browser', { action: 'open', url: 'https://example.com' });
+      expect(result.baseRisk).toBe(0);
+    });
+  });
+
   describe('evaluate unknown tool', () => {
     it('should return zero risk for unknown tools', () => {
       const result = engine.evaluate('some_tool', { foo: 'bar' });

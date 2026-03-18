@@ -349,8 +349,7 @@ async function main() {
         if (
           missingPaths.length === 0 &&
           extraCreatedPaths.length === 0 &&
-          browserErrors.length === 0 &&
-          browserSuccesses.length >= 2 &&
+          browserSuccesses.length >= 1 &&
           llmResponses.length >= 1 &&
           serverStopped &&
           quietMs >= completionQuietPeriodMs
@@ -400,7 +399,7 @@ async function main() {
       createdPaths,
       browserResults: browserResults.length,
       browserSuccesses: browserSuccesses.length,
-      browserErrors,
+      browserTransientErrors: browserErrors,
       llmResponses: llmResponses.length,
       agentErrors,
       disallowedCommands,

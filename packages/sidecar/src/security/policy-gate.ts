@@ -77,16 +77,16 @@ export class PolicyGate {
     risk += this.trustProfile.penaltyBoost;
     risk = Math.min(risk, 100);
 
-    // Four-tier verdict
+    // Monitor-first verdicts: keep capability available and escalate risky actions
+    // to HITL instead of hard-blocking them. Explicit disabled boundaries (for
+    // example `gateway`) are rejected above before we reach this point.
     let verdict: 'approve' | 'ask' | 'reject';
     if (risk <= 30) {
       verdict = 'approve';
     } else if (risk <= 70) {
       verdict = 'approve'; // pass-through with alert
-    } else if (risk <= 90) {
-      verdict = 'ask'; // HITL approval required
     } else {
-      verdict = 'reject'; // auto-block
+      verdict = 'ask'; // HITL approval required
     }
 
     // Update trust profile on anomalies

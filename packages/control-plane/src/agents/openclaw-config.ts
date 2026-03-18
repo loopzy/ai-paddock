@@ -30,16 +30,12 @@ export interface OpenClawRuntimeConfig {
       };
     };
   };
-  tools: {
-    sandbox: {
-      tools: {
-        deny: string[];
-      };
-    };
-  };
   agents: {
     defaults: {
       workspace: string;
+      sandbox: {
+        mode: 'off';
+      };
       contextTokens?: number;
       model: {
         primary: string;
@@ -80,6 +76,18 @@ export interface OpenClawRuntimeConfig {
         }>;
       }
     >;
+  };
+  tools?: {
+    web?: {
+      search?: {
+        enabled?: boolean;
+        provider?: 'perplexity';
+        perplexity?: {
+          baseUrl?: string;
+          model?: string;
+        };
+      };
+    };
   };
 }
 
@@ -160,18 +168,12 @@ export function buildOpenClawRuntimeConfig(params: {
         },
       },
     },
-    tools: {
-      sandbox: {
-        tools: {
-          // Paddock keeps external web access behind explicit boundary adapters
-          // instead of exposing OpenClaw's direct web tools inside the sandbox.
-          deny: ['web_*'],
-        },
-      },
-    },
     agents: {
       defaults: {
         workspace: '/workspace',
+        sandbox: {
+          mode: 'off',
+        },
         contextTokens: runtimeProfile.contextWindow,
         model: {
           primary: modelRef,
@@ -210,6 +212,20 @@ export function buildOpenClawRuntimeConfig(params: {
               maxTokens: runtimeProfile.maxTokens,
             },
           ],
+        },
+      },
+    },
+    tools: {
+      web: {
+        search: {
+          enabled: true,
+          provider: 'perplexity',
+          perplexity: {
+            // Route OpenClaw's web_search through Paddock's OpenRouter relay so
+            // search keeps working inside the VM without exposing host secrets.
+            baseUrl: getOpenClawProviderProxyBaseUrl('openrouter', params.proxyBaseUrl),
+            model: 'perplexity/sonar-pro',
+          },
         },
       },
     },
