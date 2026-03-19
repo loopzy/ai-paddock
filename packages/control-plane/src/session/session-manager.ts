@@ -263,10 +263,16 @@ export class SessionManager {
   async start(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session ${sessionId} not found`);
-    if (session.status !== 'created') throw new Error(`Session ${sessionId} already started`);
+    if (!['created', 'terminated', 'error'].includes(session.status)) {
+      throw new Error(`Session ${sessionId} already started`);
+    }
     const driver = this.getDriver(session.sandboxType);
 
     try {
+      session.vmId = undefined;
+      session.guiPorts = undefined;
+      session.agentTransport = undefined;
+      session.agentSessionKey = undefined;
       this.eventStore.append(session.id, 'amp.session.start', { phase: 'vm.init', message: 'Initializing VM...' });
       this.eventStore.append(session.id, 'amp.session.start', {
         phase: 'vm.image',
@@ -798,9 +804,13 @@ export class SessionManager {
       const driver = this.getDriver(session.sandboxType);
       await driver.destroyBox(session.vmId);
     }
+    session.vmId = undefined;
+    session.guiPorts = undefined;
+    session.agentTransport = undefined;
+    session.agentSessionKey = undefined;
     session.status = 'terminated';
     session.updatedAt = Date.now();
-    this.db.prepare('UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?').run(session.status, session.updatedAt, session.id);
+    this.db.prepare('UPDATE sessions SET status = ?, vm_id = NULL, updated_at = ? WHERE id = ?').run(session.status, session.updatedAt, session.id);
     this.eventStore.append(session.id, 'session.status', { status: 'terminated' });
   }
 
@@ -859,12 +869,10 @@ export class SessionManager {
     switch (session.status) {
       case 'created':
         return 'starting';
-      case 'paused':
-        return 'paused';
       case 'terminated':
-        return 'stopped';
       case 'error':
-        return 'error';
+      case 'paused':
+        return 'stopped';
       case 'running':
         break;
       default:
@@ -881,13 +889,12 @@ export class SessionManager {
       if (!event) continue;
       if (event.type === 'session.status') {
         const status = typeof event.payload.status === 'string' ? event.payload.status : null;
-        if (status === 'error') return 'error';
-        if (status === 'terminated') return 'stopped';
+        if (status === 'error' || status === 'terminated') return 'stopped';
       }
       if (event.type === 'amp.session.start') {
         const phase = typeof event.payload.phase === 'string' ? event.payload.phase : null;
         if (phase === 'sandbox_ready' || phase === 'agent_ready') {
-          return 'ready';
+          return 'running';
         }
       }
     }

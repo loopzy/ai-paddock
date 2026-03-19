@@ -77,7 +77,7 @@ describe('App browser journey', () => {
           {
             id: 'sess-1',
             status: 'running',
-            displayStatus: 'ready',
+            displayStatus: 'running',
             agentType: 'openclaw',
             sandboxType: 'computer-box',
             createdAt: 2,
@@ -93,6 +93,7 @@ describe('App browser journey', () => {
           {
             id: 'sess-3',
             status: 'terminated',
+            displayStatus: 'stopped',
             agentType: 'openclaw',
             sandboxType: 'simple-box',
             createdAt: 0,
@@ -149,8 +150,14 @@ describe('App browser journey', () => {
         expect(init?.body).toBe(JSON.stringify({ runId: 'run-2' }));
         return jsonResponse({ ok: true, aborted: true, runId: 'run-2' });
       }
-      if (url === '/api/sessions/sess-1/kill' && method === 'POST') {
-        return jsonResponse({ killed: true });
+      if (url === '/api/sessions/sess-1/stop' && method === 'POST') {
+        return jsonResponse({ stopped: true });
+      }
+      if (url === '/api/sessions/sess-3/start' && method === 'POST') {
+        return jsonResponse({ started: true });
+      }
+      if (url === '/api/sessions/sess-3' && method === 'DELETE') {
+        return jsonResponse({ deleted: true });
       }
       if (url === '/api/llm-config' && method === 'GET') {
         return jsonResponse({
@@ -176,6 +183,7 @@ describe('App browser journey', () => {
 
     vi.stubGlobal('fetch', fetchMock);
     vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
+    vi.stubGlobal('confirm', vi.fn(() => true));
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
       configurable: true,
       value: vi.fn(),
@@ -219,11 +227,12 @@ describe('App browser journey', () => {
       expect(fetchMock).toHaveBeenCalledWith('/api/sessions', expect.objectContaining({ method: 'POST' }));
     });
 
-    expect(screen.getByText('Ready')).toBeInTheDocument();
+    expect(screen.getByText('Running')).toBeInTheDocument();
     expect(screen.getByText('Starting')).toBeInTheDocument();
+    expect(screen.getByText('Stop')).toBeInTheDocument();
   });
 
-  it('supports collapsing the sidebar and hides terminated sessions from the list', async () => {
+  it('supports collapsing the sidebar and keeps stopped sessions available to reopen', async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -232,7 +241,7 @@ describe('App browser journey', () => {
 
     await user.click(screen.getByRole('button', { name: /Expand sidebar/i }));
     expect(screen.queryByRole('button', { name: /Archived sessions/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /sess-3/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /sess-3/i })).toBeInTheDocument();
   });
 
   it('lets the user edit an existing llm provider configuration from the modal', async () => {
@@ -393,6 +402,37 @@ describe('App browser journey', () => {
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/sessions/sess-1/commands/abort', expect.objectContaining({ method: 'POST' }));
+    });
+  });
+
+  it('uses stop for active sessions and start for stopped sessions', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole('button', { name: /sess-1/i }));
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/sessions/sess-1/stop', expect.objectContaining({ method: 'POST' }));
+    });
+
+    await user.click(screen.getByRole('button', { name: /sess-3/i }));
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/sessions/sess-3/start', expect.objectContaining({ method: 'POST' }));
+    });
+  });
+
+  it('deletes a session only after confirmation from the sidebar x button', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole('button', { name: /sess-3/i }));
+    await user.click(screen.getAllByRole('button', { name: /Delete session/i })[2]!);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/sessions/sess-3', expect.objectContaining({ method: 'DELETE' }));
     });
   });
 });

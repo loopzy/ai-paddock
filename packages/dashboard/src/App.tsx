@@ -25,7 +25,7 @@ type SandboxType = 'simple-box' | 'computer-box' | 'cua';
 interface SessionSummary {
   id: string;
   status: string;
-  displayStatus?: 'starting' | 'ready' | 'paused' | 'stopped' | 'error';
+  displayStatus?: 'starting' | 'running' | 'stopped';
   agentType: string;
   sandboxType: string;
   createdAt: number;
@@ -217,15 +217,13 @@ function getSessionDisplayStatus(session: SessionSummary): NonNullable<SessionSu
   if (session.displayStatus) return session.displayStatus;
   switch (session.status) {
     case 'running':
-      return 'ready';
+      return 'running';
     case 'created':
       return 'starting';
-    case 'paused':
-      return 'paused';
     case 'terminated':
-      return 'stopped';
     case 'error':
-      return 'error';
+    case 'paused':
+      return 'stopped';
     default:
       return 'starting';
   }
@@ -233,16 +231,12 @@ function getSessionDisplayStatus(session: SessionSummary): NonNullable<SessionSu
 
 function formatSessionStatus(session: SessionSummary): string {
   switch (getSessionDisplayStatus(session)) {
-    case 'ready':
-      return 'Ready';
+    case 'running':
+      return 'Running';
     case 'starting':
       return 'Starting';
-    case 'paused':
-      return 'Paused';
     case 'stopped':
-      return 'Stopped';
-    case 'error':
-      return 'Error';
+      return 'Stop';
     default:
       return 'Starting';
   }
@@ -253,8 +247,8 @@ function sortSessions(sessions: SessionSummary[]): SessionSummary[] {
     ['running', 0],
     ['created', 1],
     ['paused', 2],
-    ['error', 3],
-    ['terminated', 4],
+    ['terminated', 3],
+    ['error', 4],
   ]);
   return [...sessions].sort((left, right) => {
     const leftRank = order.get(left.status) ?? 99;
@@ -332,6 +326,7 @@ function SessionSidebar({
   onOpenCreateModal,
   onSelectSession,
   onRenameSession,
+  onDeleteSession,
   onToggleCollapsed,
 }: {
   sessions: SessionSummary[];
@@ -341,12 +336,12 @@ function SessionSidebar({
   onOpenCreateModal: () => void;
   onSelectSession: (session: SessionSummary) => void;
   onRenameSession: (sessionId: string, label: string) => void;
+  onDeleteSession: (sessionId: string) => void;
   onToggleCollapsed: () => void;
 }) {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [draftLabel, setDraftLabel] = useState('');
   const sortedSessions = sortSessions(sessions);
-  const liveSessions = sortedSessions.filter((session) => !['terminated', 'error'].includes(session.status));
 
   const startRename = (sessionId: string) => {
     setEditingSessionId(sessionId);
@@ -370,7 +365,7 @@ function SessionSidebar({
           +
         </button>
         <div className="flex flex-1 flex-col gap-2 overflow-y-auto">
-          {liveSessions.map((session) => {
+          {sortedSessions.map((session) => {
             const active = session.id === selectedSessionId;
             return (
               <button
@@ -412,15 +407,13 @@ function SessionSidebar({
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
         <div className="space-y-2">
-          {liveSessions.map((session) => {
+          {sortedSessions.map((session) => {
             const active = session.id === selectedSessionId;
             const displayStatus = getSessionDisplayStatus(session);
             const statusTone =
-              displayStatus === 'ready'
+              displayStatus === 'running'
                 ? 'bg-emerald-500'
-                : displayStatus === 'error'
-                  ? 'bg-rose-500'
-                  : displayStatus === 'stopped'
+                : displayStatus === 'stopped'
                     ? 'bg-stone-400'
                     : 'bg-amber-500';
             const displayLabel = sessionLabels[session.id] ?? session.id;
@@ -432,9 +425,14 @@ function SessionSidebar({
                       <span className={`h-2.5 w-2.5 rounded-full ${statusTone}`} />
                       <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[9px] font-medium text-stone-600">{formatSessionStatus(session)}</span>
                     </div>
-                    <button type="button" onClick={() => startRename(session.id)} className="rounded-full border border-stone-200 px-2.5 py-1 text-[9px] text-stone-500 transition hover:border-stone-300 hover:text-stone-900" aria-label="Rename session">
-                      Rename
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button type="button" onClick={() => startRename(session.id)} className="flex h-6 w-6 items-center justify-center rounded-full border border-stone-200 text-[10px] text-stone-500 transition hover:border-stone-300 hover:text-stone-900" aria-label="Rename session">
+                        ✎
+                      </button>
+                      <button type="button" onClick={() => onDeleteSession(session.id)} className="flex h-6 w-6 items-center justify-center rounded-full border border-stone-200 text-[10px] text-stone-500 transition hover:border-rose-300 hover:text-rose-700" aria-label="Delete session">
+                        ×
+                      </button>
+                    </div>
                   </div>
                   <button type="button" onClick={() => onSelectSession(session)} className="min-w-0 flex-1 text-left" aria-label={`${displayLabel} (${session.id})`}>
                     <div className="mt-2 min-w-0">
@@ -752,11 +750,18 @@ export function App() {
   const selectedSession = sessions.find((session) => session.id === sessionId) ?? null;
   useEffect(() => { if (sandboxReady || hasError) setDeploying(false); }, [sandboxReady, hasError]);
 
-  const killSession = async () => {
+  const stopSession = async () => {
     if (!sessionId) return;
-    await fetch(`/api/sessions/${sessionId}/kill`, { method: 'POST' });
-    setSessionId(null);
+    await fetch(`/api/sessions/${sessionId}/stop`, { method: 'POST' });
     setAbortingRunId(null);
+    setDeploying(false);
+    refreshSessions();
+  };
+
+  const startSession = async () => {
+    if (!sessionId) return;
+    setDeploying(true);
+    await fetch(`/api/sessions/${sessionId}/start`, { method: 'POST' });
     refreshSessions();
   };
 
@@ -797,11 +802,30 @@ export function App() {
     }));
   };
 
+  const handleDeleteSession = async (targetSessionId: string) => {
+    if (!window.confirm('Delete this session and all of its logs? This cannot be undone.')) {
+      return;
+    }
+    await fetch(`/api/sessions/${targetSessionId}`, { method: 'DELETE' });
+    if (sessionId === targetSessionId) {
+      setSessionId(null);
+      setAbortingRunId(null);
+      setDeploying(false);
+    }
+    refreshSessions();
+  };
+
   const lastGate = [...events].reverse().find(e => e.type === 'amp.gate.verdict');
   const trustScore = lastGate ? 100 - (lastGate.payload.riskScore as number ?? 0) : 100;
 
   const currentSandboxType = (selectedSession?.sandboxType as SandboxType | undefined) ?? draftSandboxType;
   const vmTabLabel = currentSandboxType === 'computer-box' ? 'Desktop' : 'Terminal';
+  const selectedSessionDisplayStatus = selectedSession ? getSessionDisplayStatus(selectedSession) : null;
+  const inputDisabled = selectedSessionDisplayStatus === 'stopped' || commandState.disabled;
+  const inputHint =
+    selectedSessionDisplayStatus === 'stopped'
+      ? 'Start the sandbox before sending commands.'
+      : commandState.hint;
 
   return (
     <div className="flex h-screen flex-col bg-[radial-gradient(circle_at_top_left,_rgba(245,158,11,0.14),_transparent_32%),linear-gradient(180deg,_#f7f4ec_0%,_#f3efe5_100%)] text-stone-900">
@@ -860,7 +884,16 @@ export function App() {
           >
             API Keys
           </button>
-          {sessionId && <button onClick={killSession} className="rounded-2xl bg-rose-600 px-3 py-1.5 text-sm font-bold text-white transition hover:bg-rose-700">KILL</button>}
+          {sessionId && selectedSessionDisplayStatus === 'stopped' && (
+            <button onClick={startSession} className="rounded-2xl bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-emerald-700">
+              Start
+            </button>
+          )}
+          {sessionId && selectedSessionDisplayStatus !== 'stopped' && (
+            <button onClick={stopSession} className="rounded-2xl bg-rose-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-rose-700">
+              Stop
+            </button>
+          )}
         </div>
       </header>
 
@@ -876,6 +909,7 @@ export function App() {
           onOpenCreateModal={() => setShowCreateModal(true)}
           onSelectSession={openSession}
           onRenameSession={handleRenameSession}
+          onDeleteSession={handleDeleteSession}
           onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
         />
 
@@ -930,9 +964,9 @@ export function App() {
               {activeTab !== 'vm' && (
                 <CommandInput
                   onSend={sendCommand}
-                  disabled={commandState.disabled}
-                  hint={commandState.hint}
-                  onStop={activeCommand?.stopTargetRunId ? () => void handleAbortCommand(activeCommand.stopTargetRunId!) : undefined}
+                  disabled={inputDisabled}
+                  hint={inputHint}
+                  onStop={selectedSessionDisplayStatus === 'stopped' ? undefined : activeCommand?.stopTargetRunId ? () => void handleAbortCommand(activeCommand.stopTargetRunId!) : undefined}
                   stopping={abortingRunId === activeCommand?.stopTargetRunId}
                 />
               )}

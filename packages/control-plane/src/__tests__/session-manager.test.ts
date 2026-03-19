@@ -784,7 +784,7 @@ describe('SessionManager', () => {
       const sessions = await manager.listWithRuntimeStatus();
 
       expect(sessions[0]?.status).toBe('running');
-      expect(sessions[0]?.displayStatus).toBe('ready');
+      expect(sessions[0]?.displayStatus).toBe('running');
 
       eventStore.append(session.id, 'session.status', { status: 'running', vmId: session.vmId });
       const mgr2 = new SessionManager(eventStore, driver, eventStore.db);
@@ -801,6 +801,18 @@ describe('SessionManager', () => {
       const startingSessions = await mgr2.listWithRuntimeStatus();
       const pending = startingSessions.find((entry) => entry.id === fresh.id);
       expect(pending?.displayStatus).toBe('starting');
+    });
+
+    it('should allow restarting a stopped session', async () => {
+      const session = await manager.create('openclaw');
+
+      await manager.start(session.id);
+      await manager.stop(session.id);
+      await manager.start(session.id);
+
+      const restarted = manager.get(session.id);
+      expect(restarted?.status).toBe('running');
+      expect(restarted?.vmId).toBeTruthy();
     });
 
     it('should remove a session and its persisted history', async () => {

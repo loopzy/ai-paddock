@@ -14,7 +14,7 @@ export type AgentCommandTransport = 'amp-command-file' | 'openclaw-gateway';
 export interface Session {
   id: string;
   status: SessionStatus;
-  displayStatus?: 'starting' | 'ready' | 'paused' | 'stopped' | 'error';
+  displayStatus?: 'starting' | 'running' | 'stopped';
   agentType: string;
   sandboxType: SandboxType;
   createdAt: number;
