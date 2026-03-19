@@ -80,6 +80,35 @@ interface PendingApproval {
   triggeredRules?: string[];
 }
 
+const SESSION_LABELS_KEY = 'paddock.session.labels.v1';
+
+function loadSessionLabels(): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(SESSION_LABELS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim().length > 0),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function saveSessionLabels(labels: Record<string, string>) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(SESSION_LABELS_KEY, JSON.stringify(labels));
+}
+
+function sessionLabelIndex(labels: Record<string, string>): number {
+  return Object.values(labels).reduce((max, label) => {
+    const match = /^Session (\d+)$/.exec(label.trim());
+    if (!match) return max;
+    return Math.max(max, Number(match[1]));
+  }, 0);
+}
+
 // ─── WebSocket Hook ───
 function useEventStream(sessionId: string | null) {
   const [events, setEvents] = useState<PaddockEvent[]>([]);
@@ -117,7 +146,7 @@ function useEventStream(sessionId: string | null) {
 function SandboxSelector({ value, onChange }: { value: SandboxType; onChange: (v: SandboxType) => void }) {
   return (
     <select value={value} onChange={(e) => onChange(e.target.value as SandboxType)}
-      className="w-full min-w-0 bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-xs text-gray-300" aria-label="Select sandbox type">
+      className="w-full min-w-0 rounded-2xl border border-stone-300 bg-white px-3 py-3 text-xs text-stone-800 shadow-sm" aria-label="Select sandbox type">
       <option value="simple-box">Simple Box (Headless Ubuntu 22.04)</option>
       <option value="computer-box">Computer Box (GUI Ubuntu XFCE Desktop)</option>
       <option value="cua" disabled>CUA (macOS) — Coming Soon</option>
@@ -128,7 +157,7 @@ function SandboxSelector({ value, onChange }: { value: SandboxType; onChange: (v
 function AgentSelector({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
     <select value={value} onChange={(e) => onChange(e.target.value)}
-      className="w-full min-w-0 bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-xs text-gray-300" aria-label="Select agent type">
+      className="w-full min-w-0 rounded-2xl border border-stone-300 bg-white px-3 py-2 text-xs text-stone-800 shadow-sm" aria-label="Select agent type">
       <option value="openclaw">OpenClaw (auto-install)</option>
     </select>
   );
@@ -150,10 +179,10 @@ function CommandInput({
   const [value, setValue] = useState('');
   const submit = () => { if (disabled || !value.trim()) return; onSend(value.trim()); setValue(''); };
   return (
-    <div className="border-t border-gray-800">
+    <div className="border-t border-stone-200 bg-stone-50/80">
       <div className="flex gap-2 p-4">
         <input
-          className="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-cyan-600 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex-1 rounded-2xl border border-stone-300 bg-white px-4 py-3 text-sm text-stone-900 shadow-sm outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-400"
           placeholder={disabled ? hint : 'Send command to agent...'}
           value={value}
           disabled={disabled}
@@ -163,7 +192,7 @@ function CommandInput({
         <button
           onClick={submit}
           disabled={disabled}
-          className="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 rounded text-sm disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-not-allowed"
+          className="rounded-2xl bg-amber-500 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-stone-300 disabled:text-stone-500"
         >
           Send
         </button>
@@ -172,13 +201,13 @@ function CommandInput({
             type="button"
             onClick={onStop}
             disabled={stopping}
-            className="px-4 py-2 bg-red-950 hover:bg-red-900 border border-red-900 rounded text-sm text-red-200 disabled:opacity-60 disabled:cursor-not-allowed"
+            className="rounded-2xl border border-rose-300 bg-white px-4 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {stopping ? 'Stopping…' : 'Stop Current'}
           </button>
         )}
       </div>
-      {disabled && <div className="px-4 pb-3 text-[11px] text-gray-500">{hint}</div>}
+      {disabled && <div className="px-4 pb-3 text-[11px] text-stone-500">{hint}</div>}
     </div>
   );
 }
@@ -216,60 +245,119 @@ function sortSessions(sessions: SessionSummary[]): SessionSummary[] {
   });
 }
 
-function SessionSidebar({
-  sessions,
-  selectedSessionId,
+function CreateSandboxModal({
+  open,
   sandboxType,
   creating,
   createError,
+  onSandboxTypeChange,
+  onCreate,
+  onClose,
+}: {
+  open: boolean;
+  sandboxType: SandboxType;
+  creating: boolean;
+  createError: string | null;
+  onSandboxTypeChange: (value: SandboxType) => void;
+  onCreate: () => void;
+  onClose: () => void;
+}) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-stone-900/20 backdrop-blur-sm" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-sandbox-title"
+        className="w-full max-w-md rounded-[28px] border border-stone-200 bg-white p-6 shadow-[0_24px_80px_rgba(80,60,30,0.16)]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 id="create-sandbox-title" className="text-lg font-semibold text-stone-900">Create sandbox</h2>
+            <p className="mt-1 text-sm text-stone-500">Choose the VM first. Deploy the agent after the session is ready.</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-full border border-stone-200 px-3 py-1 text-sm text-stone-500 transition hover:border-stone-300 hover:text-stone-900" aria-label="Close create sandbox dialog">
+            ×
+          </button>
+        </div>
+        <div className="mt-5 space-y-4">
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-500">Sandbox type</label>
+            <SandboxSelector value={sandboxType} onChange={onSandboxTypeChange} />
+          </div>
+          {createError && (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+              {createError}
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="rounded-2xl border border-stone-200 px-4 py-2 text-sm text-stone-600 transition hover:bg-stone-50">
+              Cancel
+            </button>
+            <button type="button" onClick={onCreate} disabled={creating} className="rounded-2xl bg-amber-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-stone-300 disabled:text-stone-500">
+              {creating ? 'Creating…' : 'Create sandbox'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SessionSidebar({
+  sessions,
+  selectedSessionId,
+  sessionLabels,
   collapsed,
   showArchived,
-  onSandboxTypeChange,
-  onCreateSession,
+  onOpenCreateModal,
   onSelectSession,
   onDeleteSession,
+  onRenameSession,
   onToggleCollapsed,
   onToggleArchived,
 }: {
   sessions: SessionSummary[];
   selectedSessionId: string | null;
-  sandboxType: SandboxType;
-  creating: boolean;
-  createError: string | null;
+  sessionLabels: Record<string, string>;
   collapsed: boolean;
   showArchived: boolean;
-  onSandboxTypeChange: (value: SandboxType) => void;
-  onCreateSession: () => void;
+  onOpenCreateModal: () => void;
   onSelectSession: (session: SessionSummary) => void;
   onDeleteSession: (sessionId: string) => void;
+  onRenameSession: (sessionId: string, label: string) => void;
   onToggleCollapsed: () => void;
   onToggleArchived: () => void;
 }) {
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [draftLabel, setDraftLabel] = useState('');
   const sortedSessions = sortSessions(sessions);
   const liveSessions = sortedSessions.filter((session) => !['terminated', 'error'].includes(session.status));
   const archivedSessions = sortedSessions.filter((session) => ['terminated', 'error'].includes(session.status));
 
+  const startRename = (sessionId: string) => {
+    setEditingSessionId(sessionId);
+    setDraftLabel(sessionLabels[sessionId] ?? '');
+  };
+
+  const commitRename = () => {
+    if (!editingSessionId) return;
+    const next = draftLabel.trim();
+    if (next) onRenameSession(editingSessionId, next);
+    setEditingSessionId(null);
+  };
+
   if (collapsed) {
     return (
-      <aside className="w-20 shrink-0 border-r border-gray-800 bg-gray-950/90 flex flex-col items-center py-4 gap-3">
-        <button
-          type="button"
-          onClick={onToggleCollapsed}
-          className="flex h-10 w-10 items-center justify-center rounded-2xl border border-gray-800 bg-gray-900 text-gray-300 hover:border-gray-700 hover:text-white"
-          aria-label="Expand sidebar"
-        >
+      <aside className="flex w-16 shrink-0 flex-col items-center gap-2 border-r border-stone-200 bg-stone-50 px-2 py-4">
+        <button type="button" onClick={onToggleCollapsed} className="flex h-9 w-9 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-500 transition hover:border-stone-300 hover:text-stone-900" aria-label="Expand sidebar">
           »
         </button>
-        <button
-          type="button"
-          onClick={onCreateSession}
-          disabled={creating}
-          className="flex h-10 w-10 items-center justify-center rounded-2xl bg-cyan-700 text-lg font-semibold text-white hover:bg-cyan-600 disabled:opacity-60"
-          aria-label="Create sandbox"
-        >
+        <button type="button" onClick={onOpenCreateModal} className="flex h-9 w-9 items-center justify-center rounded-full bg-amber-500 text-lg font-semibold text-white transition hover:bg-amber-600" aria-label="Create sandbox">
           +
         </button>
-        <div className="flex flex-1 flex-col gap-2 overflow-y-auto px-2">
+        <div className="flex flex-1 flex-col gap-2 overflow-y-auto">
           {liveSessions.map((session) => {
             const active = session.id === selectedSessionId;
             return (
@@ -277,15 +365,13 @@ function SessionSidebar({
                 key={session.id}
                 type="button"
                 onClick={() => onSelectSession(session)}
-                className={`flex h-11 w-11 items-center justify-center rounded-2xl border text-[10px] font-medium ${
-                  active
-                    ? 'border-cyan-700 bg-cyan-950/40 text-cyan-200'
-                    : 'border-gray-800 bg-gray-900 text-gray-400 hover:border-gray-700 hover:text-white'
+                className={`flex h-10 w-10 items-center justify-center rounded-2xl border text-[10px] font-semibold ${
+                  active ? 'border-amber-300 bg-amber-100 text-amber-900' : 'border-stone-200 bg-white text-stone-500 hover:border-stone-300 hover:text-stone-900'
                 }`}
-                aria-label={session.id}
-                title={`${session.id} · ${formatSessionStatus(session.status)}`}
+                aria-label={`${sessionLabels[session.id] ?? session.id} (${session.id})`}
+                title={`${sessionLabels[session.id] ?? session.id} · ${session.id} · ${formatSessionStatus(session.status)}`}
               >
-                {session.sandboxType === 'computer-box' ? 'GUI' : 'VM'}
+                {session.sandboxType === 'computer-box' ? 'GUI' : 'UB'}
               </button>
             );
           })}
@@ -295,150 +381,104 @@ function SessionSidebar({
   }
 
   return (
-    <aside className="w-[360px] shrink-0 border-r border-gray-800 bg-gray-950/90 flex flex-col min-h-0">
-      <div className="border-b border-gray-800 px-4 py-4">
+    <aside className="flex w-[244px] shrink-0 flex-col border-r border-stone-200 bg-stone-50/95 min-h-0">
+      <div className="border-b border-stone-200 px-4 py-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h2 className="text-sm font-semibold text-gray-100">Sandboxes</h2>
-            <p className="mt-1 text-xs text-gray-500">Create, switch, and clean up VMs without leaving the current session.</p>
+            <h2 className="text-xs font-semibold uppercase tracking-[0.16em] text-stone-700">Sandboxes</h2>
+            <p className="mt-1 text-[10px] leading-4 text-stone-500">Switch VMs without losing context.</p>
           </div>
-          <button
-            type="button"
-            onClick={onToggleCollapsed}
-            className="flex h-9 w-9 items-center justify-center rounded-2xl border border-gray-800 bg-gray-900 text-gray-300 hover:border-gray-700 hover:text-white"
-            aria-label="Collapse sidebar"
-          >
-            «
-          </button>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={onOpenCreateModal} className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-500 text-base font-semibold text-white transition hover:bg-amber-600" aria-label="Create sandbox">
+              +
+            </button>
+            <button type="button" onClick={onToggleCollapsed} className="flex h-8 w-8 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-500 transition hover:border-stone-300 hover:text-stone-900" aria-label="Collapse sidebar">
+              «
+            </button>
+          </div>
         </div>
       </div>
-
-      <div className="border-b border-gray-800 px-4 py-4 space-y-3">
-        <div>
-          <label className="block text-[11px] uppercase tracking-wide text-gray-500 mb-2">New Sandbox</label>
-          <SandboxSelector value={sandboxType} onChange={onSandboxTypeChange} />
-        </div>
-        {createError && (
-          <div className="rounded-xl border border-red-900 bg-red-950/40 px-3 py-2 text-xs text-red-300">
-            {createError}
-          </div>
-        )}
-        <button
-          onClick={onCreateSession}
-          disabled={creating}
-          className="w-full rounded-xl bg-cyan-700 px-4 py-2.5 text-sm font-medium text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {creating ? 'Creating…' : 'Create Sandbox'}
-        </button>
-      </div>
-
       <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
         <div className="space-y-2">
           {liveSessions.map((session) => {
             const active = session.id === selectedSessionId;
-            const statusTone =
-              session.status === 'running'
-                ? 'bg-emerald-500'
-                : session.status === 'error'
-                  ? 'bg-red-500'
-                  : 'bg-yellow-500';
+            const statusTone = session.status === 'running' ? 'bg-emerald-500' : session.status === 'error' ? 'bg-red-500' : 'bg-yellow-500';
+            const displayLabel = sessionLabels[session.id] ?? session.id;
             return (
-              <div
-                key={session.id}
-                className={`rounded-2xl border transition ${
-                  active
-                    ? 'border-cyan-700 bg-cyan-950/40'
-                    : 'border-gray-800 bg-gray-900/70 hover:border-gray-700 hover:bg-gray-900'
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => onSelectSession(session)}
-                  className="w-full min-w-0 px-3 py-3 text-left"
-                  aria-label={session.id}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="truncate font-medium text-gray-100">{session.id}</div>
-                      <div className="mt-1 text-[11px] text-gray-500">
-                        {session.sandboxType === 'computer-box' ? 'GUI Ubuntu' : 'Headless Ubuntu'}
+              <div key={session.id} className={`rounded-[24px] border transition ${active ? 'border-amber-300 bg-white shadow-[0_8px_24px_rgba(120,90,30,0.08)]' : 'border-stone-200 bg-white/85 hover:border-stone-300 hover:bg-white'}`}>
+                <div className="flex items-start gap-2 px-3 py-2.5">
+                  <button type="button" onClick={() => onSelectSession(session)} className="min-w-0 flex-1 text-left" aria-label={`${displayLabel} (${session.id})`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        {editingSessionId === session.id ? (
+                          <input
+                            autoFocus
+                            value={draftLabel}
+                            onChange={(event) => setDraftLabel(event.target.value)}
+                            onBlur={commitRename}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') commitRename();
+                              if (event.key === 'Escape') setEditingSessionId(null);
+                            }}
+                            className="w-full rounded-lg border border-stone-300 bg-stone-50 px-2 py-1 text-xs font-semibold text-stone-900 outline-none focus:border-amber-400"
+                            aria-label={`Rename ${session.id}`}
+                          />
+                        ) : (
+                          <div className="truncate text-[13px] font-semibold text-stone-900">{displayLabel}</div>
+                        )}
+                        <div className="mt-0.5 truncate text-[9px] tracking-wide text-stone-500">{session.id}</div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`h-2.5 w-2.5 rounded-full ${statusTone}`} />
+                        <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[9px] font-medium text-stone-600">{formatSessionStatus(session.status)}</span>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className={`h-2.5 w-2.5 rounded-full ${statusTone}`} />
-                      <span className="rounded-full bg-gray-900 px-2 py-0.5 text-[11px] text-gray-300">
-                        {formatSessionStatus(session.status)}
-                      </span>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[9px] text-stone-500">
+                      <span>{session.sandboxType === 'computer-box' ? 'GUI Ubuntu' : 'Headless Ubuntu'}</span>
+                      <span>•</span>
+                      <span>{session.agentType}</span>
                     </div>
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-gray-500">
-                    <span>{session.agentType}</span>
-                    <span>•</span>
-                    <span>{new Date(session.updatedAt ?? session.createdAt).toLocaleString()}</span>
-                  </div>
-                </button>
+                  </button>
+                  <button type="button" onClick={() => startRename(session.id)} className="rounded-full border border-stone-200 px-2 py-1 text-[9px] text-stone-500 transition hover:border-stone-300 hover:text-stone-900" aria-label="Rename session">
+                    Edit
+                  </button>
+                </div>
               </div>
             );
           })}
         </div>
-
         <div className="mt-5">
-          <button
-            type="button"
-            onClick={onToggleArchived}
-            className="flex w-full items-center justify-between rounded-2xl border border-gray-800 bg-gray-900/70 px-3 py-3 text-left hover:border-gray-700"
-          >
+          <button type="button" onClick={onToggleArchived} className="flex w-full items-center justify-between rounded-3xl border border-stone-200 bg-white/85 px-3 py-3 text-left transition hover:border-stone-300">
             <div>
-              <div className="text-sm font-medium text-gray-100">Archived sessions</div>
-              <div className="mt-1 text-[11px] text-gray-500">Old stopped or failed sandboxes from earlier runs.</div>
+              <div className="text-xs font-medium text-stone-900">Archived sessions</div>
+              <div className="mt-1 text-[9px] text-stone-500">Older stopped or failed sandboxes.</div>
             </div>
             <div className="flex items-center gap-2">
-              <span className="rounded-full bg-gray-950 px-2 py-0.5 text-[11px] text-gray-400">{archivedSessions.length}</span>
-              <span className="text-gray-500">{showArchived ? '−' : '+'}</span>
+              <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[10px] text-stone-500">{archivedSessions.length}</span>
+              <span className="text-stone-500">{showArchived ? '−' : '+'}</span>
             </div>
           </button>
-
           {showArchived && (
             <div className="mt-2 space-y-2">
               {archivedSessions.map((session) => (
-                <div key={session.id} className="rounded-2xl border border-gray-800 bg-gray-900/60 px-3 py-3">
+                <div key={session.id} className="rounded-[22px] border border-stone-200 bg-white/80 px-3 py-2.5">
                   <div className="flex items-start justify-between gap-3">
-                    <button
-                      type="button"
-                      onClick={() => onSelectSession(session)}
-                      className="min-w-0 flex-1 text-left"
-                      aria-label={session.id}
-                    >
-                      <div className="truncate font-medium text-gray-200">{session.id}</div>
-                      <div className="mt-1 text-[11px] text-gray-500">
-                        {formatSessionStatus(session.status)} · {new Date(session.updatedAt ?? session.createdAt).toLocaleString()}
-                      </div>
+                    <button type="button" onClick={() => onSelectSession(session)} className="min-w-0 flex-1 text-left" aria-label={`${sessionLabels[session.id] ?? session.id} (${session.id})`}>
+                      <div className="truncate text-[13px] font-semibold text-stone-800">{sessionLabels[session.id] ?? session.id}</div>
+                      <div className="mt-0.5 truncate text-[9px] text-stone-500">{session.id}</div>
+                      <div className="mt-1 text-[9px] text-stone-500">{formatSessionStatus(session.status)} · {new Date(session.updatedAt ?? session.createdAt).toLocaleString()}</div>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => onDeleteSession(session.id)}
-                      className="rounded-lg border border-red-900 bg-red-950 px-2.5 py-1.5 text-[11px] text-red-300 hover:bg-red-900/70"
-                      aria-label={`Delete ${session.id}`}
-                    >
+                    <button type="button" onClick={() => onDeleteSession(session.id)} className="rounded-full border border-rose-200 bg-white px-2.5 py-1.5 text-[9px] text-rose-700 transition hover:bg-rose-50" aria-label={`Delete ${session.id}`}>
                       Delete
                     </button>
                   </div>
                 </div>
               ))}
-              {archivedSessions.length === 0 && (
-                <div className="rounded-xl border border-dashed border-gray-800 px-4 py-5 text-xs text-gray-500">
-                  No archived sessions.
-                </div>
-              )}
+              {archivedSessions.length === 0 && <div className="rounded-2xl border border-dashed border-stone-300 px-4 py-5 text-xs text-stone-500">No archived sessions.</div>}
             </div>
           )}
         </div>
-
-        {sortedSessions.length === 0 && (
-          <div className="mt-3 rounded-xl border border-dashed border-gray-800 px-4 py-5 text-xs text-gray-500">
-            No sessions yet. Create one to start.
-          </div>
-        )}
+        {sortedSessions.length === 0 && <div className="mt-3 rounded-2xl border border-dashed border-stone-300 px-4 py-5 text-xs text-stone-500">No sessions yet. Create one to start.</div>}
       </div>
     </aside>
   );
@@ -448,19 +488,19 @@ function ConfigBanner({ warnings }: { warnings: HealthWarning[] }) {
   const [dismissed, setDismissed] = useState(false);
   if (dismissed || warnings.length === 0) return null;
   return (
-    <div className="border-b border-yellow-900 px-4 py-2 bg-yellow-950 text-yellow-300 text-xs">
+    <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
       <div className="flex items-start justify-between gap-2">
         <div className="space-y-1">
           {warnings.map((w, i) => (
             <div key={i}>
               <span className="font-medium">{w.message}</span>
-              <span className="text-yellow-500 ml-2">{w.hint}</span>
+              <span className="ml-2 text-amber-700">{w.hint}</span>
               {w.envHints && Object.keys(w.envHints).length > 0 && (
-                <div className="mt-1 text-yellow-600">
+                <div className="mt-1 text-amber-700">
                   {Object.entries(w.envHints).map(([key, url]) => (
                     <span key={key} className="mr-3">
-                      <code className="bg-yellow-900/50 px-1 rounded">{key}</code>
-                      {url && <> — <a href={url} target="_blank" rel="noreferrer" className="underline hover:text-yellow-400">{url}</a></>}
+                      <code className="rounded bg-amber-100 px-1">{key}</code>
+                      {url && <> — <a href={url} target="_blank" rel="noreferrer" className="underline hover:text-amber-900">{url}</a></>}
                     </span>
                   ))}
                 </div>
@@ -468,7 +508,7 @@ function ConfigBanner({ warnings }: { warnings: HealthWarning[] }) {
             </div>
           ))}
         </div>
-        <button onClick={() => setDismissed(true)} className="text-yellow-600 hover:text-yellow-400 shrink-0" aria-label="Dismiss">x</button>
+        <button onClick={() => setDismissed(true)} className="shrink-0 text-amber-700 hover:text-amber-950" aria-label="Dismiss">x</button>
       </div>
     </div>
   );
@@ -479,17 +519,17 @@ function SecurityPanel({ events }: { events: PaddockEvent[] }) {
   const alerts = events.filter(e => e.type === 'amp.gate.verdict' && (e.payload.riskScore as number) > 30);
   if (alerts.length === 0) return null;
   return (
-    <div className="border-b border-gray-800 px-4 py-2 bg-gray-950">
+    <div className="border-b border-stone-200 bg-white px-4 py-3">
       <div className="flex items-center gap-2 mb-1">
-        <span className="text-orange-400 text-sm font-bold">Security Alerts</span>
-        <span className="text-xs text-gray-500">({alerts.length})</span>
+        <span className="text-sm font-bold text-amber-800">Security Alerts</span>
+        <span className="text-xs text-stone-500">({alerts.length})</span>
       </div>
       <div className="space-y-1 max-h-24 overflow-y-auto">
         {alerts.slice(-5).map(a => (
           <div key={a.id} className="text-xs flex items-center gap-2">
-            <span className={`${(a.payload.riskScore as number) > 70 ? 'text-red-400' : 'text-yellow-400'} text-xs font-mono`}>[{a.payload.riskScore as number}]</span>
-            <span className="text-gray-400">{a.payload.toolName as string}</span>
-            <span className="text-gray-600">{(a.payload.triggeredRules as string[])?.join(', ')}</span>
+            <span className={`${(a.payload.riskScore as number) > 70 ? 'text-rose-600' : 'text-amber-700'} text-xs font-mono`}>[{a.payload.riskScore as number}]</span>
+            <span className="text-stone-700">{a.payload.toolName as string}</span>
+            <span className="text-stone-500">{(a.payload.triggeredRules as string[])?.join(', ')}</span>
           </div>
         ))}
       </div>
@@ -524,8 +564,8 @@ function AgentPanel({
 
   if (deploying || agentDeploying) {
     return (
-      <div className="border-b border-gray-800 px-4 py-3 bg-gray-950">
-        <div className="text-xs text-gray-500 mb-2">Deploying Agent...</div>
+      <div className="border-b border-stone-200 bg-white px-4 py-3">
+        <div className="mb-2 text-xs text-stone-500">Deploying Agent...</div>
         <DeployPipeline events={events.filter(e =>
           (e.type === 'amp.session.start' && (e.payload.phase as string).startsWith('agent')) ||
           (e.type === 'session.status' && e.payload.status === 'error')
@@ -550,17 +590,17 @@ function AgentPanel({
   };
 
   return (
-    <div className="border-b border-gray-800 px-4 py-3 bg-gray-950">
+    <div className="border-b border-stone-200 bg-white px-4 py-3">
       {preflightWarning && (
-        <div className="text-xs text-yellow-400 bg-yellow-950 border border-yellow-900 rounded px-2 py-1 mb-2">{preflightWarning}</div>
+        <div className="mb-2 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{preflightWarning}</div>
       )}
       <div className="flex items-center gap-3">
-        <span className="text-xs text-gray-500">
+        <span className="text-xs text-stone-500">
           {agentLifecycle === 'offline' ? 'Agent disconnected.' : 'No agent running.'}
         </span>
         <AgentSelector value={agentType} onChange={setAgentType} />
-        <button onClick={deployAgent} className="px-3 py-1 bg-cyan-700 hover:bg-cyan-600 rounded text-xs">Deploy Agent</button>
-        <span className="text-[10px] text-gray-600 ml-auto">
+        <button onClick={deployAgent} className="rounded-2xl bg-amber-500 px-3 py-2 text-xs font-medium text-white transition hover:bg-amber-600">Deploy Agent</button>
+        <span className="ml-auto text-[10px] text-stone-500">
           Will use: {defaultProvider} / {defaultModel || 'default'}.
           {' '}Or install your own agent via the terminal and connect it to the Sidecar at localhost:8801.
         </span>
@@ -575,11 +615,13 @@ export function App() {
   const [draftSandboxType, setDraftSandboxType] = useState<SandboxType>('simple-box');
   const [deploying, setDeploying] = useState(false);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [sessionLabels, setSessionLabels] = useState<Record<string, string>>(() => loadSessionLabels());
   const [healthWarnings, setHealthWarnings] = useState<HealthWarning[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'commands' | 'logs' | 'vm'>('commands');
   const [showConfigModal, setShowConfigModal] = useState(false);
+  const [showCreateModal, setShowCreateModal] = useState(false);
   const [abortingRunId, setAbortingRunId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showArchivedSessions, setShowArchivedSessions] = useState(false);
@@ -613,11 +655,42 @@ export function App() {
   }, [fetchHealth, refreshSessions]);
 
   useEffect(() => {
+    setSessionLabels((current) => {
+      const next = { ...current };
+      let counter = sessionLabelIndex(current);
+      let changed = false;
+      for (const session of sortSessions(sessions)) {
+        if (!next[session.id]) {
+          counter += 1;
+          next[session.id] = `Session ${counter}`;
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [sessions]);
+
+  useEffect(() => {
+    saveSessionLabels(sessionLabels);
+  }, [sessionLabels]);
+
+  useEffect(() => {
     const interval = setInterval(() => {
       refreshSessions();
     }, 5000);
     return () => clearInterval(interval);
   }, [refreshSessions]);
+
+  useEffect(() => {
+    const lastEvent = events.at(-1);
+    if (!sessionId || !lastEvent) return;
+    if (['session.status', 'amp.agent.ready', 'amp.agent.exit', 'amp.session.start'].includes(lastEvent.type)) {
+      const timer = window.setTimeout(() => {
+        refreshSessions();
+      }, 300);
+      return () => window.clearTimeout(timer);
+    }
+  }, [events, refreshSessions, sessionId]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -660,7 +733,15 @@ export function App() {
       const session = await res.json();
       setSessionId(session.id);
       setSessions(prev => [session, ...prev.filter((existing) => existing.id !== session.id)]);
+      setSessionLabels((current) => {
+        if (current[session.id]) return current;
+        return {
+          ...current,
+          [session.id]: `Session ${sessionLabelIndex(current) + 1}`,
+        };
+      });
       setActiveTab('commands');
+      setShowCreateModal(false);
     } catch (err) {
       setCreateError((err as Error).message);
       setDeploying(false);
@@ -713,6 +794,11 @@ export function App() {
       setAbortingRunId(null);
       setPendingApprovals([]);
     }
+    setSessionLabels((current) => {
+      const next = { ...current };
+      delete next[targetSessionId];
+      return next;
+    });
     refreshSessions();
   };
 
@@ -724,6 +810,13 @@ export function App() {
     setActiveTab('commands');
   };
 
+  const handleRenameSession = (targetSessionId: string, label: string) => {
+    setSessionLabels((current) => ({
+      ...current,
+      [targetSessionId]: label,
+    }));
+  };
+
   const lastGate = [...events].reverse().find(e => e.type === 'amp.gate.verdict');
   const trustScore = lastGate ? 100 - (lastGate.payload.riskScore as number ?? 0) : 100;
 
@@ -731,15 +824,27 @@ export function App() {
   const vmTabLabel = currentSandboxType === 'computer-box' ? 'Desktop' : 'Terminal';
 
   return (
-    <div className="h-screen flex flex-col">
+    <div className="flex h-screen flex-col bg-[radial-gradient(circle_at_top_left,_rgba(245,158,11,0.14),_transparent_32%),linear-gradient(180deg,_#f7f4ec_0%,_#f3efe5_100%)] text-stone-900">
+      <CreateSandboxModal
+        open={showCreateModal}
+        sandboxType={draftSandboxType}
+        creating={deploying}
+        createError={createError}
+        onSandboxTypeChange={setDraftSandboxType}
+        onCreate={createSession}
+        onClose={() => {
+          setShowCreateModal(false);
+          setCreateError(null);
+        }}
+      />
       {showConfigModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowConfigModal(false)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 max-w-lg w-full mx-4" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/20 backdrop-blur-sm" onClick={() => setShowConfigModal(false)}>
+          <div className="mx-4 w-full max-w-lg rounded-[28px] border border-stone-200 bg-white p-6 shadow-[0_24px_80px_rgba(80,60,30,0.16)]" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold text-gray-200">Configure LLM Providers</h2>
+              <h2 className="text-lg font-bold text-stone-900">Configure LLM Providers</h2>
               <button
                 onClick={() => setShowConfigModal(false)}
-                className="text-gray-500 hover:text-gray-300 text-2xl leading-none"
+                className="text-2xl leading-none text-stone-500 hover:text-stone-800"
               >
                 ×
               </button>
@@ -755,13 +860,13 @@ export function App() {
         </div>
       )}
 
-      <header className="flex items-center justify-between px-4 py-3 border-b border-gray-800 bg-gray-950">
+      <header className="flex items-center justify-between border-b border-stone-200 bg-white/80 px-4 py-3 backdrop-blur-sm">
         <div className="flex items-center gap-3">
-          <button onClick={() => { setSessionId(null); setDeploying(false); setActiveTab('commands'); }} className="text-lg font-bold tracking-tight hover:text-cyan-400">Paddock</button>
+          <button onClick={() => { setSessionId(null); setDeploying(false); setActiveTab('commands'); }} className="text-lg font-bold tracking-tight text-stone-900 transition hover:text-amber-700">Paddock</button>
           {sessionId && (
             <>
-              <span className="text-xs text-gray-500 bg-gray-900 px-2 py-0.5 rounded">{sessionId}</span>
-              <span className={`text-xs px-2 py-0.5 rounded ${trustScore > 60 ? 'bg-green-900 text-green-400' : trustScore > 30 ? 'bg-yellow-900 text-yellow-400' : 'bg-red-900 text-red-400'}`}>
+              <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs text-stone-500">{sessionLabels[sessionId] ?? sessionId}</span>
+              <span className={`rounded-full px-2 py-0.5 text-xs ${trustScore > 60 ? 'bg-emerald-100 text-emerald-700' : trustScore > 30 ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>
                 Trust: {trustScore}
               </span>
             </>
@@ -770,12 +875,12 @@ export function App() {
         <div className="flex items-center gap-2">
           <button
             onClick={() => setShowConfigModal(true)}
-            className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-xs font-medium text-gray-300"
+            className="rounded-2xl border border-stone-200 bg-white px-3 py-1.5 text-xs font-medium text-stone-600 transition hover:border-stone-300 hover:text-stone-900"
             title="Configure LLM API Keys"
           >
-            ⚙️ API Keys
+            API Keys
           </button>
-          {sessionId && <button onClick={killSession} className="px-3 py-1.5 bg-red-700 hover:bg-red-600 rounded text-sm font-bold">KILL</button>}
+          {sessionId && <button onClick={killSession} className="rounded-2xl bg-rose-600 px-3 py-1.5 text-sm font-bold text-white transition hover:bg-rose-700">KILL</button>}
         </div>
       </header>
 
@@ -786,15 +891,13 @@ export function App() {
         <SessionSidebar
           sessions={sessions}
           selectedSessionId={sessionId}
-          sandboxType={draftSandboxType}
-          creating={deploying && !sessionId}
-          createError={createError}
+          sessionLabels={sessionLabels}
           collapsed={sidebarCollapsed}
           showArchived={showArchivedSessions}
-          onSandboxTypeChange={setDraftSandboxType}
-          onCreateSession={createSession}
+          onOpenCreateModal={() => setShowCreateModal(true)}
           onSelectSession={openSession}
           onDeleteSession={handleDeleteSession}
+          onRenameSession={handleRenameSession}
           onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
           onToggleArchived={() => setShowArchivedSessions((value) => !value)}
         />
@@ -803,28 +906,28 @@ export function App() {
           {sessionId && deploying ? (
             <div className="flex-1 flex items-center justify-center">
               <div className="space-y-4 w-[32rem] max-w-full px-6">
-                <h2 className="text-sm font-semibold text-gray-400">Setting up sandbox...</h2>
+                <h2 className="text-sm font-semibold text-stone-500">Setting up sandbox...</h2>
                 <DeployPipeline events={events} />
               </div>
             </div>
           ) : sessionId ? (
             <>
-              <div className="flex border-b border-gray-800 bg-gray-950">
+              <div className="flex border-b border-stone-200 bg-white/80 px-2">
                 <button
                   onClick={() => setActiveTab('commands')}
-                  className={`px-4 py-2 text-xs ${activeTab === 'commands' ? 'text-white border-b-2 border-cyan-500' : 'text-gray-500 hover:text-gray-300'}`}
+                  className={`rounded-t-2xl px-4 py-3 text-xs font-medium ${activeTab === 'commands' ? 'border-b-2 border-amber-500 text-stone-900' : 'text-stone-500 hover:text-stone-800'}`}
                 >
                   Commands
                 </button>
                 <button
                   onClick={() => setActiveTab('logs')}
-                  className={`px-4 py-2 text-xs ${activeTab === 'logs' ? 'text-white border-b-2 border-cyan-500' : 'text-gray-500 hover:text-gray-300'}`}
+                  className={`rounded-t-2xl px-4 py-3 text-xs font-medium ${activeTab === 'logs' ? 'border-b-2 border-amber-500 text-stone-900' : 'text-stone-500 hover:text-stone-800'}`}
                 >
                   Raw Logs
                 </button>
                 <button
                   onClick={() => setActiveTab('vm')}
-                  className={`px-4 py-2 text-xs ${activeTab === 'vm' ? 'text-white border-b-2 border-cyan-500' : 'text-gray-500 hover:text-gray-300'}`}
+                  className={`rounded-t-2xl px-4 py-3 text-xs font-medium ${activeTab === 'vm' ? 'border-b-2 border-amber-500 text-stone-900' : 'text-stone-500 hover:text-stone-800'}`}
                 >
                   {vmTabLabel}
                 </button>
@@ -859,9 +962,9 @@ export function App() {
             </>
           ) : (
             <div className="flex-1 flex items-center justify-center p-10">
-              <div className="max-w-xl rounded-3xl border border-gray-800 bg-gray-950/70 p-8">
-                <h2 className="text-2xl font-semibold text-gray-100">Create a sandbox or reopen an existing one</h2>
-                <p className="mt-3 text-sm leading-6 text-gray-500">
+              <div className="max-w-xl rounded-[32px] border border-stone-200 bg-white/90 p-8 shadow-[0_24px_80px_rgba(80,60,30,0.08)]">
+                <h2 className="text-2xl font-semibold text-stone-900">Create a sandbox or reopen an existing one</h2>
+                <p className="mt-3 text-sm leading-6 text-stone-500">
                   The sidebar stays available the whole time, so you can keep multiple VMs around and switch between them without losing your place.
                 </p>
               </div>

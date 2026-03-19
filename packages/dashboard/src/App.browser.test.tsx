@@ -2,7 +2,7 @@
 
 import '@testing-library/jest-dom/vitest';
 import { act } from 'react';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
@@ -174,7 +174,7 @@ describe('App browser journey', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    expect(await screen.findByText('Create Sandbox')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /Create sandbox/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /sess-1/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /sess-2/i })).toBeInTheDocument();
 
@@ -182,20 +182,22 @@ describe('App browser journey', () => {
 
     await waitFor(() => {
       expect(MockWebSocket.instances).toHaveLength(1);
-      expect(screen.getAllByText('sess-1').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('Session 1').length).toBeGreaterThan(0);
     });
 
-    expect(screen.getByText('Create Sandbox')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Create sandbox/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /sess-2/i })).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /sess-2/i }));
 
     await waitFor(() => {
       expect(MockWebSocket.instances).toHaveLength(2);
-      expect(screen.getAllByText('sess-2').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('Session 2').length).toBeGreaterThan(0);
     });
 
-    await user.click(screen.getByRole('button', { name: 'Create Sandbox' }));
+    await user.click(screen.getByRole('button', { name: /Create sandbox/i }));
+    const dialog = screen.getByRole('dialog', { name: /Create sandbox/i });
+    await user.click(within(dialog).getByRole('button', { name: /^Create sandbox$/i }));
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/sessions', expect.objectContaining({ method: 'POST' }));
     });
@@ -328,11 +330,10 @@ describe('App browser journey', () => {
     });
 
     expect(await screen.findByText('这个命令还在跑')).toBeInTheDocument();
-    expect(screen.getByText('虎扑首页已经打开。')).toBeInTheDocument();
+    expect(screen.getAllByText('虎扑首页已经打开。').length).toBeGreaterThan(0);
     expect(screen.queryByText(/"toolName":/)).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'View details' }));
-    expect(await screen.findByText(/Execution tree/i)).toBeInTheDocument();
+    expect((await screen.findAllByText(/Execution tree/i)).length).toBeGreaterThan(0);
     expect(screen.getByText(/LLM turn · openrouter \/ moonshotai\/kimi-k2/i)).toBeInTheDocument();
     expect(screen.getAllByText(/先帮我看看虎扑首页/).length).toBeGreaterThan(0);
     expect(screen.getByText(/Tool · browser/)).toBeInTheDocument();

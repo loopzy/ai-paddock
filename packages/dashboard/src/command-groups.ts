@@ -75,6 +75,28 @@ function collapseWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
+function formatKeyValueLines(value: unknown, indent = 0): string[] {
+  if (value === null || value === undefined) return [];
+  const prefix = '  '.repeat(indent);
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => {
+      if (item && typeof item === 'object') {
+        return [`${prefix}-`].concat(formatKeyValueLines(item, indent + 1));
+      }
+      return [`${prefix}- ${String(item)}`];
+    });
+  }
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>).flatMap(([key, nested]) => {
+      if (nested && typeof nested === 'object') {
+        return [`${prefix}${key}:`].concat(formatKeyValueLines(nested, indent + 1));
+      }
+      return [`${prefix}${key}: ${String(nested)}`];
+    });
+  }
+  return [`${prefix}${String(value)}`];
+}
+
 function formatMessageTranscript(messages: unknown): string | undefined {
   if (!Array.isArray(messages)) return undefined;
   const sections = messages
@@ -102,6 +124,67 @@ function formatLlmResponseDetail(payload: Record<string, unknown>): string | und
   if (typeof payload.durationMs === 'number') metrics.push(`duration: ${payload.durationMs}ms`);
   if (metrics.length > 0) {
     lines.push(metrics.join(' · '));
+  }
+  return lines.length > 0 ? lines.join('\n\n') : undefined;
+}
+
+function formatToolInputDetail(toolInput: Record<string, unknown>): string | undefined {
+  const lines = formatKeyValueLines(toolInput);
+  return lines.length > 0 ? lines.join('\n') : undefined;
+}
+
+function formatGateVerdictDetail(payload: Record<string, unknown>): string | undefined {
+  const lines: string[] = [];
+  if (typeof payload.riskScore === 'number') lines.push(`Risk score: ${payload.riskScore}`);
+  if (Array.isArray(payload.triggeredRules) && payload.triggeredRules.length > 0) {
+    lines.push(`Triggered rules: ${(payload.triggeredRules as string[]).join(', ')}`);
+  }
+  const behaviorReview = payload.behaviorReview && typeof payload.behaviorReview === 'object'
+    ? (payload.behaviorReview as Record<string, unknown>)
+    : undefined;
+  if (behaviorReview) {
+    const source = getString(behaviorReview.source);
+    const reason = getString(behaviorReview.reason);
+    const boost = typeof behaviorReview.riskBoost === 'number' ? behaviorReview.riskBoost : undefined;
+    if (source) {
+      lines.push(`Behavior review: ${source}${boost !== undefined ? ` (+${boost})` : ''}`);
+    }
+    if (reason) {
+      lines.push(`Review reason: ${reason}`);
+    }
+  }
+  return lines.length > 0 ? lines.join('\n\n') : undefined;
+}
+
+function formatToolResultDetail(payload: Record<string, unknown>): string | undefined {
+  const lines: string[] = [];
+  const error = getString(payload.error);
+  if (error) {
+    lines.push(`Error: ${error}`);
+  }
+  if (typeof payload.durationMs === 'number') {
+    lines.push(`Duration: ${payload.durationMs}ms`);
+  }
+  const text = extractToolResultText(payload.result);
+  if (text) {
+    lines.push(text);
+  }
+  const resultRoot =
+    payload.result && typeof payload.result === 'object'
+      ? (payload.result as Record<string, unknown>)
+      : undefined;
+  const details =
+    resultRoot?.result && typeof resultRoot.result === 'object'
+      ? ((resultRoot.result as Record<string, unknown>).details as unknown)
+      : undefined;
+  if (details && typeof details === 'object') {
+    const summaryFields = Object.fromEntries(
+      Object.entries(details as Record<string, unknown>).filter(([key]) => !['content', 'citations'].includes(key)),
+    );
+    const detailLines = formatKeyValueLines(summaryFields);
+    if (detailLines.length > 0) {
+      lines.push(detailLines.join('\n'));
+    }
   }
   return lines.length > 0 ? lines.join('\n\n') : undefined;
 }
@@ -409,7 +492,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
             'tool-intent',
             `Tool · ${toolName}`,
             summarizeToolInput(toolName, toolInput),
-            safeJson(toolInput),
+            formatToolInputDetail(toolInput),
             'running',
           );
           addChildStep(currentLLMStep, step, steps);
@@ -430,7 +513,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
             'gate-verdict',
             `Policy · ${verdict}`,
             `Risk ${riskScore}${behaviorSource ? ` · ${behaviorSource}${behaviorRisk !== undefined ? ` +${behaviorRisk}` : ''}` : ''}${Array.isArray(payload.triggeredRules) && payload.triggeredRules.length > 0 ? ` · ${(payload.triggeredRules as string[]).join(', ')}` : ''}`,
-            safeJson(payload),
+            formatGateVerdictDetail(payload),
             verdict === 'reject' ? 'blocked' : verdict === 'ask' ? 'blocked' : 'completed',
           );
           addChildStep(currentToolStep ?? currentLLMStep, step, steps);
@@ -442,7 +525,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
             'tool-result',
             `Result · ${getString(payload.toolName) ?? 'tool'}`,
             summarizeToolResult(event) ?? 'completed',
-            safeJson(payload),
+            formatToolResultDetail(payload),
             getString(payload.error) ? 'failed' : 'completed',
           );
           addChildStep(currentToolStep ?? currentLLMStep, step, steps);
@@ -543,5 +626,5 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
     });
   }
 
-  return runs.reverse();
+  return runs;
 }

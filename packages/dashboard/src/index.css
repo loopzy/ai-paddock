@@ -3,5 +3,6 @@
 @tailwind utilities;
 
 body {
-  @apply bg-gray-950 text-gray-100 font-mono;
+  @apply bg-stone-100 text-stone-900;
+  font-family: "IBM Plex Sans", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
 }

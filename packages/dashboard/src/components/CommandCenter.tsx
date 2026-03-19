@@ -20,10 +20,10 @@ function formatRelativeDuration(startedAt: number, finishedAt?: number): string 
 
 function StatusPill({ status }: { status: 'running' | 'completed' | 'failed' | 'aborted' }) {
   const styles: Record<typeof status, string> = {
-    running: 'bg-cyan-950 text-cyan-300 border-cyan-900',
-    completed: 'bg-emerald-950 text-emerald-300 border-emerald-900',
-    failed: 'bg-red-950 text-red-300 border-red-900',
-    aborted: 'bg-yellow-950 text-yellow-300 border-yellow-900',
+    running: 'bg-sky-100 text-sky-700 border-sky-200',
+    completed: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+    failed: 'bg-rose-100 text-rose-700 border-rose-200',
+    aborted: 'bg-amber-100 text-amber-700 border-amber-200',
   };
   const labels: Record<typeof status, string> = {
     running: 'Running',
@@ -42,13 +42,13 @@ function StatusPill({ status }: { status: 'running' | 'completed' | 'failed' | '
 function StepTone({ status }: { status?: CommandStep['status'] }) {
   const styles =
     status === 'failed'
-      ? 'bg-red-500'
+      ? 'bg-rose-500'
       : status === 'blocked'
-        ? 'bg-yellow-400'
+        ? 'bg-amber-500'
         : status === 'running'
-          ? 'bg-cyan-400'
+          ? 'bg-sky-500'
           : 'bg-emerald-400';
-  return <span className={`mt-1.5 h-2.5 w-2.5 rounded-full ${styles}`} />;
+  return <span className={`mt-1.5 h-2.5 w-2.5 rounded-full ring-4 ring-white ${styles}`} />;
 }
 
 function StepTree({
@@ -59,28 +59,29 @@ function StepTree({
   depth?: number;
 }) {
   return (
-    <div className="space-y-2">
+    <div className={`space-y-4 ${depth > 0 ? 'border-l border-stone-200 pl-5' : ''}`}>
       {steps.map((step) => (
-        <div key={step.id} className="rounded-2xl border border-gray-800 bg-gray-950/60">
-          <div className="flex gap-3 px-4 py-3" style={{ marginLeft: depth * 20 }}>
+        <div key={step.id} className="relative">
+          {depth > 0 && <span className="absolute -left-5 top-4 h-px w-4 bg-stone-200" />}
+          <div className="flex gap-3">
             <StepTone status={step.status} />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <div className="text-sm font-medium text-gray-100">{step.title}</div>
-                <div className="text-[11px] text-gray-500">{new Date(step.timestamp).toLocaleTimeString()}</div>
+                <div className="text-sm font-medium text-stone-900">{step.title}</div>
+                <div className="text-[11px] text-stone-500">{new Date(step.timestamp).toLocaleTimeString()}</div>
               </div>
               {step.summary && (
-                <div className="mt-1 whitespace-pre-wrap text-sm leading-6 text-gray-300">{step.summary}</div>
+                <div className="mt-1 whitespace-pre-wrap text-sm leading-6 text-stone-700">{step.summary}</div>
               )}
               {step.detail && (
-                <pre className="mt-3 overflow-x-auto rounded-xl border border-gray-800 bg-gray-950 px-3 py-2 text-[11px] leading-5 text-gray-500">
+                <div className="mt-3 whitespace-pre-wrap rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-[12px] leading-6 text-stone-600">
                   {step.detail}
-                </pre>
+                </div>
               )}
             </div>
           </div>
           {step.children.length > 0 && (
-            <div className="border-t border-gray-800 px-3 py-3">
+            <div className="mt-4">
               <StepTree steps={step.children} depth={depth + 1} />
             </div>
           )}
@@ -98,16 +99,16 @@ function ApprovalCard({
   onDecide?: (requestId: string, verdict: 'approved' | 'rejected') => Promise<void> | void;
 }) {
   return (
-    <div className="rounded-2xl border border-orange-900 bg-orange-950/20 p-4">
+    <div className="rounded-3xl border border-amber-200 bg-amber-50 p-4">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="text-sm font-semibold text-orange-300">Approval required</div>
+        <div className="text-sm font-semibold text-amber-800">Approval required</div>
         {typeof request.riskScore === 'number' && (
-          <div className="rounded-full bg-orange-950 px-2 py-0.5 text-[11px] text-orange-300">Risk {request.riskScore}</div>
+          <div className="rounded-full bg-white px-2 py-0.5 text-[11px] text-amber-700">Risk {request.riskScore}</div>
         )}
       </div>
-      <div className="mt-2 text-sm text-gray-300">{request.toolName}</div>
-      <div className="mt-1 text-xs text-gray-500">{request.reason}</div>
-      <pre className="mt-3 overflow-x-auto rounded-xl border border-orange-900/40 bg-gray-950 px-3 py-2 text-[11px] leading-5 text-gray-500">
+      <div className="mt-2 text-sm text-stone-800">{request.toolName}</div>
+      <div className="mt-1 text-xs text-stone-500">{request.reason}</div>
+      <pre className="mt-3 overflow-x-auto rounded-2xl border border-amber-200 bg-white px-3 py-2 text-[11px] leading-5 text-stone-600">
         {JSON.stringify(request.toolArgs, null, 2)}
       </pre>
       {onDecide && (
@@ -115,14 +116,14 @@ function ApprovalCard({
           <button
             type="button"
             onClick={() => void onDecide(request.id, 'approved')}
-            className="rounded-lg bg-emerald-900 px-3 py-2 text-xs font-medium text-emerald-100 hover:bg-emerald-800"
+            className="rounded-2xl bg-emerald-600 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-700"
           >
             Approve
           </button>
           <button
             type="button"
             onClick={() => void onDecide(request.id, 'rejected')}
-            className="rounded-lg bg-red-900 px-3 py-2 text-xs font-medium text-red-100 hover:bg-red-800"
+            className="rounded-2xl bg-rose-600 px-3 py-2 text-xs font-medium text-white hover:bg-rose-700"
           >
             Reject
           </button>
@@ -156,7 +157,7 @@ export function CommandCenter({
   if (commandRuns.length === 0) {
     return (
       <div className="flex-1 overflow-y-auto px-6 py-8">
-        <div className="rounded-2xl border border-gray-800 bg-gray-950/70 p-6 text-sm text-gray-500">
+        <div className="rounded-[28px] border border-stone-200 bg-white/80 p-6 text-sm text-stone-500 shadow-[0_12px_32px_rgba(80,60,30,0.06)]">
           Commands will show up here as structured runs once you send something to the agent.
         </div>
       </div>
@@ -170,23 +171,23 @@ export function CommandCenter({
           const expanded = visibleExpandedRunIds.includes(run.id);
           const attachedApprovals = run.active ? pendingApprovals : [];
           return (
-            <section key={run.id} className="rounded-3xl border border-gray-800 bg-gray-950/70 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.01)]">
+            <section key={run.id} className="rounded-[30px] border border-stone-200 bg-white/90 p-5 shadow-[0_18px_48px_rgba(80,60,30,0.08)]">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <StatusPill status={run.status} />
-                    <span className="text-xs text-gray-500">
+                    <span className="text-xs text-stone-500">
                       {new Date(run.startedAt).toLocaleTimeString()} · {formatRelativeDuration(run.startedAt, run.finishedAt)}
                     </span>
                     {run.runId && (
-                      <code className="rounded bg-gray-900 px-2 py-0.5 text-[10px] text-gray-500">
+                      <code className="rounded-full bg-stone-100 px-2 py-0.5 text-[10px] text-stone-500">
                         {run.runId}
                       </code>
                     )}
                   </div>
-                  <h3 className="mt-3 text-base font-semibold text-gray-100">{run.command}</h3>
+                  <h3 className="mt-3 text-base font-semibold text-stone-900">{run.command}</h3>
                   {run.currentActivity && (
-                    <div className="mt-2 text-sm text-cyan-300">Current activity: {run.currentActivity}</div>
+                    <div className="mt-2 text-sm text-amber-700">Current activity: {run.currentActivity}</div>
                   )}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -195,7 +196,7 @@ export function CommandCenter({
                       type="button"
                       onClick={() => void onAbortCommand(run.stopTargetRunId!)}
                       disabled={abortingRunId === run.stopTargetRunId}
-                      className="rounded-lg border border-red-900 bg-red-950 px-3 py-2 text-xs font-medium text-red-300 hover:bg-red-900/70 disabled:cursor-not-allowed disabled:opacity-60"
+                      className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
                       aria-label="Stop command"
                     >
                       {abortingRunId === run.stopTargetRunId ? 'Stopping…' : 'Stop command'}
@@ -210,7 +211,7 @@ export function CommandCenter({
                           : [...current, run.id],
                       )
                     }
-                    className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-xs font-medium text-gray-300 hover:border-gray-700 hover:text-white"
+                    className="rounded-2xl border border-stone-200 bg-white px-3 py-2 text-xs font-medium text-stone-600 hover:border-stone-300 hover:text-stone-900"
                   >
                     {expanded ? 'Hide details' : 'View details'}
                   </button>
@@ -218,45 +219,45 @@ export function CommandCenter({
               </div>
 
               <div className="mt-4 grid gap-3 md:grid-cols-4">
-                <div className="rounded-xl border border-gray-800 bg-gray-900/70 px-3 py-2">
-                  <div className="text-[11px] uppercase tracking-wide text-gray-500">Tools</div>
-                  <div className="mt-1 text-sm text-gray-100">{run.toolsUsed}</div>
+                <div className="rounded-2xl border border-stone-200 bg-stone-50 px-3 py-3">
+                  <div className="text-[11px] uppercase tracking-wide text-stone-500">Tools</div>
+                  <div className="mt-1 text-sm text-stone-900">{run.toolsUsed}</div>
                   {run.toolNames.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1">
                       {run.toolNames.map((toolName) => (
-                        <span key={toolName} className="rounded-full bg-gray-800 px-2 py-0.5 text-[11px] text-gray-300">
+                        <span key={toolName} className="rounded-full bg-white px-2 py-0.5 text-[11px] text-stone-600 ring-1 ring-stone-200">
                           {toolName}
                         </span>
                       ))}
                     </div>
                   )}
                 </div>
-                <div className="rounded-xl border border-gray-800 bg-gray-900/70 px-3 py-2">
-                  <div className="text-[11px] uppercase tracking-wide text-gray-500">Policy</div>
-                  <div className="mt-1 text-sm text-gray-100">{run.approvals} approved</div>
-                  <div className="text-xs text-gray-500">{run.blockers} blocked</div>
+                <div className="rounded-2xl border border-stone-200 bg-stone-50 px-3 py-3">
+                  <div className="text-[11px] uppercase tracking-wide text-stone-500">Policy</div>
+                  <div className="mt-1 text-sm text-stone-900">{run.approvals} approved</div>
+                  <div className="text-xs text-stone-500">{run.blockers} blocked</div>
                 </div>
-                <div className="rounded-xl border border-gray-800 bg-gray-900/70 px-3 py-2">
-                  <div className="text-[11px] uppercase tracking-wide text-gray-500">LLM Turns</div>
-                  <div className="mt-1 text-sm text-gray-100">{run.llmTurns}</div>
+                <div className="rounded-2xl border border-stone-200 bg-stone-50 px-3 py-3">
+                  <div className="text-[11px] uppercase tracking-wide text-stone-500">LLM Turns</div>
+                  <div className="mt-1 text-sm text-stone-900">{run.llmTurns}</div>
                 </div>
-                <div className="rounded-xl border border-gray-800 bg-gray-900/70 px-3 py-2">
-                  <div className="text-[11px] uppercase tracking-wide text-gray-500">Raw Events</div>
-                  <div className="mt-1 text-sm text-gray-100">{run.rawEventCount}</div>
+                <div className="rounded-2xl border border-stone-200 bg-stone-50 px-3 py-3">
+                  <div className="text-[11px] uppercase tracking-wide text-stone-500">Raw Events</div>
+                  <div className="mt-1 text-sm text-stone-900">{run.rawEventCount}</div>
                 </div>
               </div>
 
               {run.responseText && (
-                <div className="mt-4 rounded-xl border border-emerald-950 bg-emerald-950/30 p-4">
-                  <div className="text-[11px] uppercase tracking-wide text-emerald-400">Agent Reply</div>
-                  <div className="mt-2 whitespace-pre-wrap text-sm leading-6 text-emerald-100">{run.responseText}</div>
+                <div className="mt-4 rounded-[24px] border border-emerald-200 bg-emerald-50 p-4">
+                  <div className="text-[11px] uppercase tracking-wide text-emerald-700">Agent Reply</div>
+                  <div className="mt-2 whitespace-pre-wrap text-sm leading-6 text-emerald-900">{run.responseText}</div>
                 </div>
               )}
 
               {run.latestError && run.status !== 'completed' && (
-                <div className="mt-4 rounded-xl border border-red-950 bg-red-950/30 p-4">
-                  <div className="text-[11px] uppercase tracking-wide text-red-400">Latest Error</div>
-                  <div className="mt-2 text-sm leading-6 text-red-100">{run.latestError}</div>
+                <div className="mt-4 rounded-[24px] border border-rose-200 bg-rose-50 p-4">
+                  <div className="text-[11px] uppercase tracking-wide text-rose-700">Latest Error</div>
+                  <div className="mt-2 text-sm leading-6 text-rose-900">{run.latestError}</div>
                 </div>
               )}
 
@@ -264,7 +265,7 @@ export function CommandCenter({
                 <div className="mt-5 space-y-4">
                   {attachedApprovals.length > 0 && (
                     <div className="space-y-3">
-                      <div className="text-[11px] uppercase tracking-wide text-gray-500">Awaiting approval</div>
+                      <div className="text-[11px] uppercase tracking-wide text-stone-500">Awaiting approval</div>
                       {attachedApprovals.map((request) => (
                         <ApprovalCard key={request.id} request={request} onDecide={onHitlDecision} />
                       ))}
@@ -273,7 +274,7 @@ export function CommandCenter({
 
                   {run.steps.length > 0 && (
                     <div>
-                      <div className="text-[11px] uppercase tracking-wide text-gray-500">Execution tree</div>
+                      <div className="text-[11px] uppercase tracking-wide text-stone-500">Execution tree</div>
                       <div className="mt-3">
                         <StepTree steps={run.steps} />
                       </div>

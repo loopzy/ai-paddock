@@ -87,7 +87,7 @@ describe('buildCommandRuns', () => {
     expect(runs[0].steps[0]?.children[1]).toMatchObject({
       kind: 'tool-intent',
       title: 'Tool · browser',
-      detail: JSON.stringify({ action: 'open', url: 'https://www.hupu.com' }, null, 2),
+      detail: 'action: open\nurl: https://www.hupu.com',
     });
     expect(runs[0].steps.at(-1)).toMatchObject({
       kind: 'agent-message',
@@ -138,14 +138,14 @@ describe('buildCommandRuns', () => {
 
     expect(runs).toHaveLength(2);
     expect(runs[0]).toMatchObject({
-      command: '第二个命令',
-      status: 'failed',
-      latestError: 'Timed out',
-    });
-    expect(runs[1]).toMatchObject({
       command: '第一个命令',
       status: 'running',
       toolsUsed: 1,
+    });
+    expect(runs[1]).toMatchObject({
+      command: '第二个命令',
+      status: 'failed',
+      latestError: 'Timed out',
     });
   });
 });
