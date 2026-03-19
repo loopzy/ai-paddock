@@ -137,6 +137,59 @@ describe('LLMProxy', () => {
     }
   });
 
+  it('merges streamed text chunks into a single readable response preview', async () => {
+    const reporter = new ReporterStub();
+    const proxyPort = 44870 + Math.floor(Math.random() * 1000);
+    const proxy = new LLMProxy(proxyPort, reporter as any, new ControlPlaneClient(['http://control.test']), 'session-sidecar-test');
+
+    global.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input) === 'http://control.test/api/llm/proxy') {
+        expect(init?.method).toBe('POST');
+        return new Response(JSON.stringify({
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+          body: [
+            'data: {"id":"chatcmpl-3","object":"chat.completion.chunk","model":"moonshotai/kimi-k2","choices":[{"index":0,"delta":{"content":"我"},"finish_reason":null}]}',
+            '',
+            'data: {"id":"chatcmpl-3","object":"chat.completion.chunk","model":"moonshotai/kimi-k2","choices":[{"index":0,"delta":{"content":"找到了一些"},"finish_reason":null}]}',
+            '',
+            'data: {"id":"chatcmpl-3","object":"chat.completion.chunk","model":"moonshotai/kimi-k2","choices":[{"index":0,"delta":{"content":"中文网站。"},"finish_reason":"stop"}],"usage":{"prompt_tokens":210,"completion_tokens":18}}',
+            '',
+            'data: [DONE]',
+            '',
+          ].join('\n'),
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return originalFetch(input, init);
+    };
+
+    await proxy.start();
+
+    try {
+      const response = await originalFetch(`http://127.0.0.1:${proxyPort}/openrouter/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'moonshotai/kimi-k2',
+          messages: [{ role: 'user', content: '推荐一些中文娱乐网站' }],
+          stream: true,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain('data:');
+
+      const responseEvent = reporter.events.find((event) => event.type === 'llm.response');
+      expect(responseEvent?.payload.responsePreview).toBe('我找到了一些中文网站。');
+      expect(String(responseEvent?.payload.responsePreview)).not.toContain('\n');
+    } finally {
+      proxy.stop();
+    }
+  });
+
   it('does not emit transport errors for streamed partial tool call arguments', async () => {
     const reporter = new ReporterStub();
     const proxyPort = 41870 + Math.floor(Math.random() * 1000);

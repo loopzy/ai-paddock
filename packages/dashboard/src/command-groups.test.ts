@@ -77,6 +77,12 @@ describe('buildCommandRuns', () => {
     expect(runs[0].steps[0]).toMatchObject({
       kind: 'llm-request',
       summary: 'openrouter / moonshotai/kimi-k2 · 去虎扑看看明天什么有什么球赛',
+      detail: 'USER\n去虎扑看看明天什么有什么球赛',
+    });
+    expect(runs[0].steps[0]?.children[0]).toMatchObject({
+      kind: 'llm-response',
+      summary: '[tool] browser',
+      detail: '[tool] browser\n\ntokens in: 1200 · tokens out: 80',
     });
     expect(runs[0].steps[0]?.children[1]).toMatchObject({
       kind: 'tool-intent',

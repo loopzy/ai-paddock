@@ -71,6 +71,41 @@ function safeJson(value: unknown): string | undefined {
   }
 }
 
+function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function formatMessageTranscript(messages: unknown): string | undefined {
+  if (!Array.isArray(messages)) return undefined;
+  const sections = messages
+    .map((message) => {
+      if (!message || typeof message !== 'object') return '';
+      const record = message as Record<string, unknown>;
+      const role = getString(record.role) ?? 'unknown';
+      const text = getString(record.text);
+      if (!text) return '';
+      return `${role.toUpperCase()}\n${text}`;
+    })
+    .filter(Boolean);
+  return sections.length > 0 ? sections.join('\n\n') : undefined;
+}
+
+function formatLlmResponseDetail(payload: Record<string, unknown>): string | undefined {
+  const lines: string[] = [];
+  const preview = getString(payload.responsePreview);
+  if (preview) {
+    lines.push(collapseWhitespace(preview));
+  }
+  const metrics: string[] = [];
+  if (typeof payload.tokensIn === 'number') metrics.push(`tokens in: ${payload.tokensIn}`);
+  if (typeof payload.tokensOut === 'number') metrics.push(`tokens out: ${payload.tokensOut}`);
+  if (typeof payload.durationMs === 'number') metrics.push(`duration: ${payload.durationMs}ms`);
+  if (metrics.length > 0) {
+    lines.push(metrics.join(' · '));
+  }
+  return lines.length > 0 ? lines.join('\n\n') : undefined;
+}
+
 function summarizeToolInput(toolName: string, toolInput: Record<string, unknown>): string {
   if (toolName === 'browser') {
     const action = getString(toolInput.action) ?? 'act';
@@ -146,7 +181,7 @@ function summarizeLLMRequest(payload: Record<string, unknown>): string {
 
 function summarizeLLMResponse(payload: Record<string, unknown>): string {
   const preview = getString(payload.responsePreview);
-  if (preview) return preview.slice(0, 160);
+  if (preview) return collapseWhitespace(preview).slice(0, 160);
   const tokensOut = typeof payload.tokensOut === 'number' ? payload.tokensOut : undefined;
   if (tokensOut !== undefined) return `${tokensOut} output tokens`;
   return 'Response received';
@@ -343,7 +378,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
             'llm-request',
             `LLM turn · ${getString(payload.provider) ?? 'provider'} / ${getString(payload.model) ?? 'model'}`,
             summarizeLLMRequest(payload),
-            safeJson(payload.messagesPreview),
+            formatMessageTranscript(payload.messagesPreview),
             'running',
           );
           steps.push(step);
@@ -358,12 +393,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
             'llm-response',
             'LLM response',
             summarizeLLMResponse(payload),
-            safeJson({
-              responsePreview: payload.responsePreview,
-              tokensIn: payload.tokensIn,
-              tokensOut: payload.tokensOut,
-              durationMs: payload.durationMs,
-            }),
+            formatLlmResponseDetail(payload),
             'completed',
           );
           addChildStep(currentLLMStep, step, steps);

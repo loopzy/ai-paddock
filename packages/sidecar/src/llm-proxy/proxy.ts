@@ -472,23 +472,31 @@ function truncatePreview(value: string, maxChars = 280): string {
   return `${value.slice(0, maxChars)}...`;
 }
 
+function mergeTextFragments(fragments: string[]): string {
+  return fragments
+    .join('')
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function extractTextPreview(content: unknown): string {
   if (typeof content === 'string') {
     return truncatePreview(content.trim());
   }
   if (Array.isArray(content)) {
-    const text = content
-      .map((item) => {
-        if (!item || typeof item !== 'object') return '';
-        const block = item as Record<string, unknown>;
-        if (block.type === 'text' && typeof block.text === 'string') {
-          return block.text;
-        }
-        return '';
-      })
-      .filter(Boolean)
-      .join('\n')
-      .trim();
+    const text = mergeTextFragments(
+      content
+        .map((item) => {
+          if (!item || typeof item !== 'object') return '';
+          const block = item as Record<string, unknown>;
+          if (block.type === 'text' && typeof block.text === 'string') {
+            return block.text;
+          }
+          return '';
+        })
+        .filter(Boolean),
+    );
     return text ? truncatePreview(text) : '';
   }
   if (content && typeof content === 'object') {
@@ -518,24 +526,41 @@ function extractMessagesPreview(body: string): Array<{ role: string; text: strin
 }
 
 function extractResponsePreview(content: unknown[]): string {
-  const parts = content
-    .map((block) => {
-      if (!block || typeof block !== 'object') return '';
-      const record = block as Record<string, unknown>;
-      if (record.type === 'text' && typeof record.text === 'string') {
-        return record.text;
+  const parts: string[] = [];
+  const textBuffer: string[] = [];
+
+  const flushTextBuffer = () => {
+    const merged = mergeTextFragments(textBuffer);
+    if (merged) {
+      parts.push(merged);
+    }
+    textBuffer.length = 0;
+  };
+
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue;
+    const record = block as Record<string, unknown>;
+    if (record.type === 'text' && typeof record.text === 'string') {
+      textBuffer.push(record.text);
+      continue;
+    }
+
+    flushTextBuffer();
+
+    if (record.type === 'tool_use' && typeof record.name === 'string') {
+      parts.push(`[tool] ${record.name}`);
+      continue;
+    }
+    if (record.type === 'function' && record.function && typeof record.function === 'object') {
+      const fn = record.function as Record<string, unknown>;
+      if (typeof fn.name === 'string') {
+        parts.push(`[tool] ${fn.name}`);
       }
-      if (record.type === 'tool_use' && typeof record.name === 'string') {
-        return `[tool] ${record.name}`;
-      }
-      if (record.type === 'function' && record.function && typeof record.function === 'object') {
-        const fn = record.function as Record<string, unknown>;
-        return typeof fn.name === 'string' ? `[tool] ${fn.name}` : '';
-      }
-      return '';
-    })
-    .filter(Boolean)
-    .join('\n')
-    .trim();
-  return parts ? truncatePreview(parts, 400) : '';
+    }
+  }
+
+  flushTextBuffer();
+
+  const preview = parts.join('\n').trim();
+  return preview ? truncatePreview(preview, 400) : '';
 }
