@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 interface LLMConfigPanelProps {
-  providers: any[];
+  providers: Array<Record<string, any>>;
   onConfigured: () => void;
 }
 
@@ -12,19 +12,38 @@ interface SavedConfig {
   enabled: boolean;
 }
 
+type PanelMode = 'select' | 'add' | 'edit';
+
+function providerLabel(providers: Array<Record<string, any>>, providerId: string) {
+  return providers.find((provider) => provider.id === providerId)?.label ?? providerId;
+}
+
 export function LLMConfigPanel({ providers, onConfigured }: LLMConfigPanelProps) {
   const [savedConfigs, setSavedConfigs] = useState<SavedConfig[]>([]);
-  const [mode, setMode] = useState<'select' | 'add'>('select');
+  const [mode, setMode] = useState<PanelMode>('select');
   const [selectedProvider, setSelectedProvider] = useState<string>('');
   const [apiKey, setApiKey] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
+  const [success, setSuccess] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchConfigs();
+    void fetchConfigs();
   }, []);
+
+  const selectedProviderInfo = useMemo(
+    () => providers.find((provider) => provider.id === selectedProvider),
+    [providers, selectedProvider],
+  );
+
+  const resetForm = () => {
+    setSelectedProvider('');
+    setApiKey('');
+    setBaseUrl('');
+    setError(null);
+    setSuccess(null);
+  };
 
   const fetchConfigs = async () => {
     try {
@@ -38,50 +57,72 @@ export function LLMConfigPanel({ providers, onConfigured }: LLMConfigPanelProps)
 
   const handleSelectExisting = (provider: string) => {
     setSelectedProvider(provider);
-    const config = savedConfigs.find(c => c.provider === provider);
-    if (config) {
-      setBaseUrl(config.baseUrl || '');
-    }
     setTimeout(() => {
       onConfigured();
     }, 300);
   };
 
+  const handleStartAdd = () => {
+    resetForm();
+    setMode('add');
+  };
+
+  const handleStartEdit = (config: SavedConfig) => {
+    setSelectedProvider(config.provider);
+    setBaseUrl(config.baseUrl || '');
+    setApiKey('');
+    setError(null);
+    setSuccess(null);
+    setMode('edit');
+  };
+
+  const handleCancel = () => {
+    resetForm();
+    setMode('select');
+  };
+
   const handleSave = async () => {
-    if (!selectedProvider || !apiKey) {
-      setError('Please select a provider and enter an API key');
+    if (!selectedProvider) {
+      setError('Please select a provider');
+      return;
+    }
+
+    const isEditing = mode === 'edit';
+    if (!isEditing && !apiKey) {
+      setError('Please enter an API key');
       return;
     }
 
     setSaving(true);
     setError(null);
-    setSuccess(false);
+    setSuccess(null);
 
     try {
+      const body: Record<string, unknown> = {
+        provider: selectedProvider,
+        baseUrl: baseUrl || undefined,
+      };
+      if (apiKey) {
+        body.apiKey = apiKey;
+      }
+
       const res = await fetch('/api/llm-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          provider: selectedProvider,
-          apiKey,
-          baseUrl: baseUrl || undefined,
-        }),
+        body: JSON.stringify(body),
       });
 
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
 
-      setSuccess(true);
-      setApiKey('');
-      setBaseUrl('');
-      setSelectedProvider('');
+      setSuccess(isEditing ? 'Configuration updated.' : 'Configuration saved.');
       await fetchConfigs();
+      onConfigured();
       setTimeout(() => {
-        setSuccess(false);
+        resetForm();
         setMode('select');
-        onConfigured();
-      }, 1500);
+      }, 900);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -100,58 +141,74 @@ export function LLMConfigPanel({ providers, onConfigured }: LLMConfigPanelProps)
     }
   };
 
-  const selectedProviderInfo = providers.find(p => p.id === selectedProvider);
+  const availableProviders = providers.filter(
+    (provider) => mode === 'edit' || !savedConfigs.some((config) => config.provider === provider.id),
+  );
 
   return (
-    <div className="border border-gray-800 rounded bg-gray-950 p-4">
-      <h3 className="text-sm font-bold text-gray-300 mb-3">LLM Provider Configuration</h3>
+    <div className="rounded-[24px] border border-stone-200 bg-stone-50/80 p-4">
+      <h3 className="mb-3 text-sm font-semibold text-stone-900">LLM Provider Configuration</h3>
 
       {mode === 'select' ? (
         <>
-          {/* Select from saved configurations */}
           {savedConfigs.length > 0 ? (
             <div className="space-y-2">
-              <div className="text-xs text-gray-400 mb-2">Select a configured provider:</div>
-              {savedConfigs.map((config) => {
-                const providerInfo = providers.find(p => p.id === config.provider);
-                return (
+              <div className="text-xs text-stone-500">Configured providers</div>
+              {savedConfigs.map((config) => (
+                <div
+                  key={config.provider}
+                  className="flex items-center gap-3 rounded-2xl border border-stone-200 bg-white px-3 py-3"
+                >
                   <button
-                    key={config.provider}
+                    type="button"
                     onClick={() => handleSelectExisting(config.provider)}
-                    className="w-full flex items-center gap-2 bg-gray-900 hover:bg-gray-800 border border-gray-700 hover:border-cyan-600 rounded px-3 py-2 transition-colors"
+                    className="flex min-w-0 flex-1 items-center gap-3 text-left"
                   >
-                    <span className="text-green-400 text-xs">✓</span>
-                    <div className="flex-1 min-w-0 text-left">
-                      <div className="text-xs text-gray-300 font-medium">{providerInfo?.label || config.provider}</div>
-                      {config.baseUrl && (
-                        <div className="text-[10px] text-gray-500 truncate">{config.baseUrl}</div>
-                      )}
+                    <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-[11px] font-semibold text-emerald-700">
+                      ✓
+                    </span>
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-medium text-stone-800">
+                        {providerLabel(providers, config.provider)}
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-stone-500">
+                        {config.baseUrl || 'Default endpoint'}
+                      </div>
                     </div>
+                  </button>
+                  <div className="flex shrink-0 items-center gap-1.5">
                     <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDelete(config.provider);
-                      }}
-                      className="px-2 py-1 text-[10px] text-red-400 hover:text-red-300 hover:bg-red-950/30 rounded shrink-0"
+                      type="button"
+                      onClick={() => handleStartEdit(config)}
+                      className="rounded-full border border-stone-200 bg-stone-50 px-2.5 py-1 text-[10px] font-medium text-stone-600 transition hover:border-stone-300 hover:bg-stone-100"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(config.provider)}
+                      className="rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-[10px] font-medium text-rose-700 transition hover:bg-rose-100"
                     >
                       Delete
                     </button>
-                  </button>
-                );
-              })}
+                  </div>
+                </div>
+              ))}
               <button
-                onClick={() => setMode('add')}
-                className="w-full mt-3 px-3 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-cyan-400 rounded text-xs"
+                type="button"
+                onClick={handleStartAdd}
+                className="mt-2 w-full rounded-2xl border border-stone-200 bg-white px-3 py-2 text-xs font-medium text-stone-700 transition hover:border-stone-300 hover:bg-stone-100"
               >
-                + Add New Provider
+                + Add Provider
               </button>
             </div>
           ) : (
-            <div className="text-center py-4">
-              <div className="text-xs text-gray-500 mb-3">No providers configured yet</div>
+            <div className="rounded-2xl border border-dashed border-stone-300 bg-white px-4 py-5 text-center">
+              <div className="text-xs text-stone-500">No providers configured yet</div>
               <button
-                onClick={() => setMode('add')}
-                className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-xs"
+                type="button"
+                onClick={handleStartAdd}
+                className="mt-3 rounded-2xl bg-amber-500 px-4 py-2 text-xs font-medium text-white transition hover:bg-amber-600"
               >
                 Add Provider
               </button>
@@ -159,110 +216,112 @@ export function LLMConfigPanel({ providers, onConfigured }: LLMConfigPanelProps)
           )}
         </>
       ) : (
-        <>
-          {/* Add new provider form */}
-          <div className="space-y-3">
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">Provider</label>
-              <select
-                value={selectedProvider}
-                onChange={(e) => setSelectedProvider(e.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"
-              >
-                <option value="">Select a provider...</option>
-                {providers.map((provider) => (
-                  <option key={provider.id} value={provider.id}>
-                    {provider.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+        <div className="space-y-3 rounded-2xl border border-stone-200 bg-white p-4">
+          <div className="text-xs font-medium text-stone-700">
+            {mode === 'edit' ? `Edit ${providerLabel(providers, selectedProvider)}` : 'Add provider'}
+          </div>
 
-            {selectedProviderInfo && (
-              <>
-                <div className="text-xs text-gray-500">
-                  {selectedProviderInfo.description}
-                </div>
+          <div>
+            <label className="mb-1 block text-xs text-stone-500">Provider</label>
+            <select
+              value={selectedProvider}
+              onChange={(e) => setSelectedProvider(e.target.value)}
+              disabled={mode === 'edit'}
+              className="w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-xs text-stone-800 disabled:cursor-not-allowed disabled:bg-stone-100"
+            >
+              <option value="">Select a provider...</option>
+              {availableProviders.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.label}
+                </option>
+              ))}
+            </select>
+          </div>
 
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">
-                    API Key
+          {selectedProviderInfo && (
+            <>
+              <div className="text-xs leading-5 text-stone-500">{selectedProviderInfo.description}</div>
+
+              <div>
+                <label className="mb-1 block text-xs text-stone-500">
+                  API Key
+                  {selectedProviderInfo.docsUrl && (
                     <a
                       href={selectedProviderInfo.docsUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="ml-2 text-cyan-400 hover:underline"
+                      className="ml-2 text-amber-700 hover:underline"
                     >
-                      Get Key →
+                      Get key
                     </a>
-                  </label>
-                  <input
-                    type="password"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder={`Enter ${selectedProviderInfo.label} API Key`}
-                    className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 font-mono"
-                  />
-                </div>
+                  )}
+                </label>
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder={
+                    mode === 'edit'
+                      ? 'Leave empty to keep the current key'
+                      : `Enter ${selectedProviderInfo.label} API key`
+                  }
+                  className="w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-xs text-stone-800"
+                />
+              </div>
 
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">
-                    Base URL (optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={baseUrl}
-                    onChange={(e) => setBaseUrl(e.target.value)}
-                    placeholder="Leave empty for default"
-                    className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 font-mono"
-                  />
-                </div>
+              <div>
+                <label className="mb-1 block text-xs text-stone-500">Base URL (optional)</label>
+                <input
+                  type="text"
+                  value={baseUrl}
+                  onChange={(e) => setBaseUrl(e.target.value)}
+                  placeholder="Leave empty for the default endpoint"
+                  className="w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-xs text-stone-800"
+                />
+              </div>
 
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleSave}
-                    disabled={saving || !apiKey}
-                    className="flex-1 bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-700 disabled:text-gray-500 text-white px-3 py-2 rounded text-xs font-medium"
-                  >
-                    {saving ? 'Saving...' : success ? '✓ Saved!' : 'Save Configuration'}
-                  </button>
-                  <button
-                    onClick={() => {
-                      setMode('select');
-                      setSelectedProvider('');
-                      setApiKey('');
-                      setBaseUrl('');
-                      setError(null);
-                    }}
-                    className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded text-xs"
-                  >
-                    Cancel
-                  </button>
-                </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={saving || !selectedProvider || (mode === 'add' && !apiKey)}
+                  className="flex-1 rounded-2xl bg-amber-500 px-3 py-2 text-xs font-medium text-white transition hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-stone-300"
+                >
+                  {saving ? 'Saving...' : mode === 'edit' ? 'Save changes' : 'Save configuration'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  className="rounded-2xl border border-stone-200 bg-stone-50 px-3 py-2 text-xs font-medium text-stone-600 transition hover:border-stone-300 hover:bg-stone-100"
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
 
-                {error && (
-                  <div className="text-xs text-red-400 bg-red-950/50 border border-red-900 rounded px-2 py-1">
-                    {error}
-                  </div>
-                )}
+          {error && (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              {error}
+            </div>
+          )}
 
-                {success && (
-                  <div className="text-xs text-green-400 bg-green-950/50 border border-green-900 rounded px-2 py-1">
-                    Configuration saved successfully!
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        </>
+          {success && (
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+              {success}
+            </div>
+          )}
+        </div>
       )}
 
-      <div className="mt-4 pt-3 border-t border-gray-800 text-xs text-gray-500">
-        <p className="mb-1">💡 Tip: You can also configure via environment variables:</p>
-        <pre className="bg-black/30 p-2 rounded text-[10px] overflow-x-auto">
+      <div className="mt-4 rounded-2xl border border-stone-200 bg-white px-4 py-3">
+        <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.16em] text-stone-500">Tip</div>
+        <p className="mb-2 text-xs text-stone-500">You can also configure providers with environment variables:</p>
+        <pre className="overflow-x-auto rounded-xl border border-stone-200 bg-stone-50 p-3 text-[10px] leading-5 text-stone-700">
 {`export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."
-export OPENROUTER_API_KEY="sk-or-..."`}</pre>
+export OPENROUTER_API_KEY="sk-or-..."`}
+        </pre>
       </div>
     </div>
   );

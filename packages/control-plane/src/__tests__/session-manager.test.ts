@@ -774,6 +774,35 @@ describe('SessionManager', () => {
       expect(terminatedEvent).toBeTruthy();
     });
 
+    it('should expose starting sessions as starting until sandbox_ready is emitted', async () => {
+      const session = await manager.create('openclaw');
+      await manager.start(session.id);
+
+      const runtimeSession = manager.get(session.id);
+      expect(runtimeSession?.status).toBe('running');
+
+      const sessions = await manager.listWithRuntimeStatus();
+
+      expect(sessions[0]?.status).toBe('running');
+      expect(sessions[0]?.displayStatus).toBe('ready');
+
+      eventStore.append(session.id, 'session.status', { status: 'running', vmId: session.vmId });
+      const mgr2 = new SessionManager(eventStore, driver, eventStore.db);
+      const fresh = await mgr2.create('openclaw');
+      const freshRuntime = mgr2.get(fresh.id);
+      if (freshRuntime) {
+        freshRuntime.status = 'running';
+        freshRuntime.vmId = 'vm-fresh';
+      }
+      eventStore.db
+        .prepare('UPDATE sessions SET status = ?, vm_id = ?, updated_at = ? WHERE id = ?')
+        .run('running', 'vm-fresh', Date.now(), fresh.id);
+
+      const startingSessions = await mgr2.listWithRuntimeStatus();
+      const pending = startingSessions.find((entry) => entry.id === fresh.id);
+      expect(pending?.displayStatus).toBe('starting');
+    });
+
     it('should remove a session and its persisted history', async () => {
       const session = await manager.create('openclaw');
       eventStore.append(session.id, 'user.command', { command: 'cleanup me' });

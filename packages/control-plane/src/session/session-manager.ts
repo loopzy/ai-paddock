@@ -20,6 +20,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, '..', '..', '..', '..');
 type GuestPackageManager = 'apt' | 'apk';
 type RuntimeSession = Session & { agentConfig?: AgentLLMConfig };
+type SessionSummary = Session & { displayStatus?: Session['displayStatus'] };
 
 const SANDBOX_PACKAGE_MANAGER_MAP: Partial<Record<SandboxType, GuestPackageManager>> = {
   'simple-box': 'apt',
@@ -817,12 +818,15 @@ export class SessionManager {
     return Array.from(this.sessions.values());
   }
 
-  async listWithRuntimeStatus(): Promise<Session[]> {
+  async listWithRuntimeStatus(): Promise<SessionSummary[]> {
     const sessions = Array.from(this.sessions.values());
     for (const session of sessions) {
       await this.reconcileRuntimeStatus(session);
     }
-    return sessions;
+    return sessions.map((session) => ({
+      ...session,
+      displayStatus: this.deriveDisplayStatus(session),
+    }));
   }
 
   async remove(sessionId: string): Promise<boolean> {
@@ -849,6 +853,46 @@ export class SessionManager {
     session.status = status;
     session.updatedAt = Date.now();
     this.db.prepare('UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?').run(session.status, session.updatedAt, session.id);
+  }
+
+  private deriveDisplayStatus(session: RuntimeSession): Session['displayStatus'] {
+    switch (session.status) {
+      case 'created':
+        return 'starting';
+      case 'paused':
+        return 'paused';
+      case 'terminated':
+        return 'stopped';
+      case 'error':
+        return 'error';
+      case 'running':
+        break;
+      default:
+        return undefined;
+    }
+
+    const events = this.eventStore.getEvents(session.id, {
+      types: ['session.status', 'amp.session.start'],
+      limit: 200,
+    });
+
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (!event) continue;
+      if (event.type === 'session.status') {
+        const status = typeof event.payload.status === 'string' ? event.payload.status : null;
+        if (status === 'error') return 'error';
+        if (status === 'terminated') return 'stopped';
+      }
+      if (event.type === 'amp.session.start') {
+        const phase = typeof event.payload.phase === 'string' ? event.payload.phase : null;
+        if (phase === 'sandbox_ready' || phase === 'agent_ready') {
+          return 'ready';
+        }
+      }
+    }
+
+    return 'starting';
   }
 
   private async reconcileRuntimeStatus(session: RuntimeSession): Promise<void> {

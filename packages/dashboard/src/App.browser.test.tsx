@@ -77,6 +77,7 @@ describe('App browser journey', () => {
           {
             id: 'sess-1',
             status: 'running',
+            displayStatus: 'ready',
             agentType: 'openclaw',
             sandboxType: 'computer-box',
             createdAt: 2,
@@ -84,6 +85,7 @@ describe('App browser journey', () => {
           {
             id: 'sess-2',
             status: 'running',
+            displayStatus: 'starting',
             agentType: 'none',
             sandboxType: 'simple-box',
             createdAt: 1,
@@ -134,10 +136,10 @@ describe('App browser journey', () => {
           createdAt: 3,
         });
       }
-      if ((url === '/api/sessions/sess-1/events' || url === '/api/sessions/sess-2/events' || url === '/api/sessions/sess-3/events' || url === '/api/sessions/sess-new/events') && method === 'GET') {
+      if ((url === '/api/sessions/sess-1/events' || url === '/api/sessions/sess-2/events' || url === '/api/sessions/sess-new/events') && method === 'GET') {
         return jsonResponse([]);
       }
-      if ((url === '/api/sessions/sess-1/hitl/pending' || url === '/api/sessions/sess-2/hitl/pending' || url === '/api/sessions/sess-3/hitl/pending' || url === '/api/sessions/sess-new/hitl/pending') && method === 'GET') {
+      if ((url === '/api/sessions/sess-1/hitl/pending' || url === '/api/sessions/sess-2/hitl/pending' || url === '/api/sessions/sess-new/hitl/pending') && method === 'GET') {
         return jsonResponse([]);
       }
       if (url === '/api/sessions/sess-1/deploy-agent' && method === 'POST') {
@@ -150,7 +152,22 @@ describe('App browser journey', () => {
       if (url === '/api/sessions/sess-1/kill' && method === 'POST') {
         return jsonResponse({ killed: true });
       }
-      if (url === '/api/sessions/sess-3' && method === 'DELETE') {
+      if (url === '/api/llm-config' && method === 'GET') {
+        return jsonResponse({
+          providers: [
+            {
+              provider: 'openrouter',
+              apiKey: '***',
+              baseUrl: 'https://openrouter.ai/api/v1',
+              enabled: true,
+            },
+          ],
+        });
+      }
+      if (url === '/api/llm-config' && method === 'POST') {
+        return jsonResponse({ ok: true });
+      }
+      if (url === '/api/llm-config/openrouter' && method === 'DELETE') {
         return jsonResponse({ deleted: true });
       }
 
@@ -201,9 +218,12 @@ describe('App browser journey', () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/sessions', expect.objectContaining({ method: 'POST' }));
     });
+
+    expect(screen.getByText('Ready')).toBeInTheDocument();
+    expect(screen.getByText('Starting')).toBeInTheDocument();
   });
 
-  it('supports collapsing the sidebar and deleting archived sessions', async () => {
+  it('supports collapsing the sidebar and hides terminated sessions from the list', async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -211,11 +231,35 @@ describe('App browser journey', () => {
     expect(screen.getByRole('button', { name: /Expand sidebar/i })).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Expand sidebar/i }));
-    await user.click(screen.getByRole('button', { name: /Archived sessions/i }));
-    await user.click(screen.getByRole('button', { name: /Delete sess-3/i }));
+    expect(screen.queryByRole('button', { name: /Archived sessions/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /sess-3/i })).not.toBeInTheDocument();
+  });
+
+  it('lets the user edit an existing llm provider configuration from the modal', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole('button', { name: /API Keys/i }));
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    const baseUrlInput = screen.getByDisplayValue('https://openrouter.ai/api/v1');
+    await user.clear(baseUrlInput);
+    await user.type(baseUrlInput, 'https://openrouter.ai/api/v2');
+    const apiKeyInput = screen.getByPlaceholderText(/leave empty to keep the current key/i);
+    await user.type(apiKeyInput, 'sk-test');
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
 
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith('/api/sessions/sess-3', expect.objectContaining({ method: 'DELETE' }));
+      const saveCall = fetchMock.mock.calls.find(
+        ([url, init]) => url === '/api/llm-config' && init?.method === 'POST',
+      );
+      expect(saveCall).toBeTruthy();
+      expect(JSON.parse(String(saveCall?.[1]?.body))).toEqual({
+        provider: 'openrouter',
+        baseUrl: 'https://openrouter.ai/api/v2',
+        apiKey: 'sk-test',
+      });
     });
   });
 
@@ -334,9 +378,10 @@ describe('App browser journey', () => {
     expect(screen.queryByText(/"toolName":/)).not.toBeInTheDocument();
 
     expect((await screen.findAllByText(/Execution tree/i)).length).toBeGreaterThan(0);
-    expect(screen.getByText(/LLM turn · openrouter \/ moonshotai\/kimi-k2/i)).toBeInTheDocument();
+    expect(screen.getByText('moonshotai/kimi-k2')).toBeInTheDocument();
+    expect(screen.getByText('openrouter')).toBeInTheDocument();
     expect(screen.getAllByText(/先帮我看看虎扑首页/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/Tool · browser/)).toBeInTheDocument();
+    expect(screen.getByText('browser')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Raw Logs' }));
     await waitFor(() => {

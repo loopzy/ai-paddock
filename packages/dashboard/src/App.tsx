@@ -25,6 +25,7 @@ type SandboxType = 'simple-box' | 'computer-box' | 'cua';
 interface SessionSummary {
   id: string;
   status: string;
+  displayStatus?: 'starting' | 'ready' | 'paused' | 'stopped' | 'error';
   agentType: string;
   sandboxType: string;
   createdAt: number;
@@ -212,20 +213,38 @@ function CommandInput({
   );
 }
 
-function formatSessionStatus(status: string): string {
-  switch (status) {
+function getSessionDisplayStatus(session: SessionSummary): NonNullable<SessionSummary['displayStatus']> {
+  if (session.displayStatus) return session.displayStatus;
+  switch (session.status) {
     case 'running':
-      return 'Running';
+      return 'ready';
     case 'created':
+      return 'starting';
+    case 'paused':
+      return 'paused';
+    case 'terminated':
+      return 'stopped';
+    case 'error':
+      return 'error';
+    default:
+      return 'starting';
+  }
+}
+
+function formatSessionStatus(session: SessionSummary): string {
+  switch (getSessionDisplayStatus(session)) {
+    case 'ready':
+      return 'Ready';
+    case 'starting':
       return 'Starting';
     case 'paused':
       return 'Paused';
-    case 'terminated':
+    case 'stopped':
       return 'Stopped';
     case 'error':
       return 'Error';
     default:
-      return status;
+      return 'Starting';
   }
 }
 
@@ -310,31 +329,24 @@ function SessionSidebar({
   selectedSessionId,
   sessionLabels,
   collapsed,
-  showArchived,
   onOpenCreateModal,
   onSelectSession,
-  onDeleteSession,
   onRenameSession,
   onToggleCollapsed,
-  onToggleArchived,
 }: {
   sessions: SessionSummary[];
   selectedSessionId: string | null;
   sessionLabels: Record<string, string>;
   collapsed: boolean;
-  showArchived: boolean;
   onOpenCreateModal: () => void;
   onSelectSession: (session: SessionSummary) => void;
-  onDeleteSession: (sessionId: string) => void;
   onRenameSession: (sessionId: string, label: string) => void;
   onToggleCollapsed: () => void;
-  onToggleArchived: () => void;
 }) {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [draftLabel, setDraftLabel] = useState('');
   const sortedSessions = sortSessions(sessions);
   const liveSessions = sortedSessions.filter((session) => !['terminated', 'error'].includes(session.status));
-  const archivedSessions = sortedSessions.filter((session) => ['terminated', 'error'].includes(session.status));
 
   const startRename = (sessionId: string) => {
     setEditingSessionId(sessionId);
@@ -369,7 +381,7 @@ function SessionSidebar({
                   active ? 'border-amber-300 bg-amber-100 text-amber-900' : 'border-stone-200 bg-white text-stone-500 hover:border-stone-300 hover:text-stone-900'
                 }`}
                 aria-label={`${sessionLabels[session.id] ?? session.id} (${session.id})`}
-                title={`${sessionLabels[session.id] ?? session.id} · ${session.id} · ${formatSessionStatus(session.status)}`}
+                title={`${sessionLabels[session.id] ?? session.id} · ${session.id} · ${formatSessionStatus(session)}`}
               >
                 {session.sandboxType === 'computer-box' ? 'GUI' : 'UB'}
               </button>
@@ -402,81 +414,56 @@ function SessionSidebar({
         <div className="space-y-2">
           {liveSessions.map((session) => {
             const active = session.id === selectedSessionId;
-            const statusTone = session.status === 'running' ? 'bg-emerald-500' : session.status === 'error' ? 'bg-red-500' : 'bg-yellow-500';
+            const displayStatus = getSessionDisplayStatus(session);
+            const statusTone =
+              displayStatus === 'ready'
+                ? 'bg-emerald-500'
+                : displayStatus === 'error'
+                  ? 'bg-rose-500'
+                  : displayStatus === 'stopped'
+                    ? 'bg-stone-400'
+                    : 'bg-amber-500';
             const displayLabel = sessionLabels[session.id] ?? session.id;
             return (
               <div key={session.id} className={`rounded-[24px] border transition ${active ? 'border-amber-300 bg-white shadow-[0_8px_24px_rgba(120,90,30,0.08)]' : 'border-stone-200 bg-white/85 hover:border-stone-300 hover:bg-white'}`}>
-                <div className="flex items-start gap-2 px-3 py-2.5">
+                <div className="px-3 py-2.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className={`h-2.5 w-2.5 rounded-full ${statusTone}`} />
+                      <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[9px] font-medium text-stone-600">{formatSessionStatus(session)}</span>
+                    </div>
+                    <button type="button" onClick={() => startRename(session.id)} className="rounded-full border border-stone-200 px-2.5 py-1 text-[9px] text-stone-500 transition hover:border-stone-300 hover:text-stone-900" aria-label="Rename session">
+                      Rename
+                    </button>
+                  </div>
                   <button type="button" onClick={() => onSelectSession(session)} className="min-w-0 flex-1 text-left" aria-label={`${displayLabel} (${session.id})`}>
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        {editingSessionId === session.id ? (
-                          <input
-                            autoFocus
-                            value={draftLabel}
-                            onChange={(event) => setDraftLabel(event.target.value)}
-                            onBlur={commitRename}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') commitRename();
-                              if (event.key === 'Escape') setEditingSessionId(null);
-                            }}
-                            className="w-full rounded-lg border border-stone-300 bg-stone-50 px-2 py-1 text-xs font-semibold text-stone-900 outline-none focus:border-amber-400"
-                            aria-label={`Rename ${session.id}`}
-                          />
-                        ) : (
-                          <div className="truncate text-[13px] font-semibold text-stone-900">{displayLabel}</div>
-                        )}
-                        <div className="mt-0.5 truncate text-[9px] tracking-wide text-stone-500">{session.id}</div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className={`h-2.5 w-2.5 rounded-full ${statusTone}`} />
-                        <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[9px] font-medium text-stone-600">{formatSessionStatus(session.status)}</span>
+                    <div className="mt-2 min-w-0">
+                      {editingSessionId === session.id ? (
+                        <input
+                          autoFocus
+                          value={draftLabel}
+                          onChange={(event) => setDraftLabel(event.target.value)}
+                          onBlur={commitRename}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') commitRename();
+                            if (event.key === 'Escape') setEditingSessionId(null);
+                          }}
+                          className="w-full rounded-lg border border-stone-300 bg-stone-50 px-2 py-1 text-xs font-semibold text-stone-900 outline-none focus:border-amber-400"
+                          aria-label={`Rename ${session.id}`}
+                        />
+                      ) : (
+                        <div className="truncate text-[13px] font-semibold text-stone-900">{displayLabel}</div>
+                      )}
+                      <div className="mt-1 truncate text-[9px] tracking-wide text-stone-500">{session.id}</div>
+                      <div className="mt-2 text-[9px] text-stone-500">
+                        {session.sandboxType === 'computer-box' ? 'GUI Ubuntu' : 'Headless Ubuntu'}
                       </div>
                     </div>
-                    <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[9px] text-stone-500">
-                      <span>{session.sandboxType === 'computer-box' ? 'GUI Ubuntu' : 'Headless Ubuntu'}</span>
-                      <span>•</span>
-                      <span>{session.agentType}</span>
-                    </div>
-                  </button>
-                  <button type="button" onClick={() => startRename(session.id)} className="rounded-full border border-stone-200 px-2 py-1 text-[9px] text-stone-500 transition hover:border-stone-300 hover:text-stone-900" aria-label="Rename session">
-                    Edit
                   </button>
                 </div>
               </div>
             );
           })}
-        </div>
-        <div className="mt-5">
-          <button type="button" onClick={onToggleArchived} className="flex w-full items-center justify-between rounded-3xl border border-stone-200 bg-white/85 px-3 py-3 text-left transition hover:border-stone-300">
-            <div>
-              <div className="text-xs font-medium text-stone-900">Archived sessions</div>
-              <div className="mt-1 text-[9px] text-stone-500">Older stopped or failed sandboxes.</div>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[10px] text-stone-500">{archivedSessions.length}</span>
-              <span className="text-stone-500">{showArchived ? '−' : '+'}</span>
-            </div>
-          </button>
-          {showArchived && (
-            <div className="mt-2 space-y-2">
-              {archivedSessions.map((session) => (
-                <div key={session.id} className="rounded-[22px] border border-stone-200 bg-white/80 px-3 py-2.5">
-                  <div className="flex items-start justify-between gap-3">
-                    <button type="button" onClick={() => onSelectSession(session)} className="min-w-0 flex-1 text-left" aria-label={`${sessionLabels[session.id] ?? session.id} (${session.id})`}>
-                      <div className="truncate text-[13px] font-semibold text-stone-800">{sessionLabels[session.id] ?? session.id}</div>
-                      <div className="mt-0.5 truncate text-[9px] text-stone-500">{session.id}</div>
-                      <div className="mt-1 text-[9px] text-stone-500">{formatSessionStatus(session.status)} · {new Date(session.updatedAt ?? session.createdAt).toLocaleString()}</div>
-                    </button>
-                    <button type="button" onClick={() => onDeleteSession(session.id)} className="rounded-full border border-rose-200 bg-white px-2.5 py-1.5 text-[9px] text-rose-700 transition hover:bg-rose-50" aria-label={`Delete ${session.id}`}>
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              ))}
-              {archivedSessions.length === 0 && <div className="rounded-2xl border border-dashed border-stone-300 px-4 py-5 text-xs text-stone-500">No archived sessions.</div>}
-            </div>
-          )}
         </div>
         {sortedSessions.length === 0 && <div className="mt-3 rounded-2xl border border-dashed border-stone-300 px-4 py-5 text-xs text-stone-500">No sessions yet. Create one to start.</div>}
       </div>
@@ -594,16 +581,25 @@ function AgentPanel({
       {preflightWarning && (
         <div className="mb-2 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{preflightWarning}</div>
       )}
-      <div className="flex items-center gap-3">
-        <span className="text-xs text-stone-500">
-          {agentLifecycle === 'offline' ? 'Agent disconnected.' : 'No agent running.'}
-        </span>
+      <div className="flex items-center gap-3 overflow-x-auto whitespace-nowrap">
         <AgentSelector value={agentType} onChange={setAgentType} />
-        <button onClick={deployAgent} className="rounded-2xl bg-amber-500 px-3 py-2 text-xs font-medium text-white transition hover:bg-amber-600">Deploy Agent</button>
-        <span className="ml-auto text-[10px] text-stone-500">
-          Will use: {defaultProvider} / {defaultModel || 'default'}.
-          {' '}Or install your own agent via the terminal and connect it to the Sidecar at localhost:8801.
-        </span>
+        <button
+          onClick={deployAgent}
+          className="rounded-2xl bg-amber-500 px-5 py-2 text-xs font-medium text-white transition hover:bg-amber-600 min-w-[8rem] shrink-0"
+        >
+          Deploy Agent
+        </button>
+        <div className="ml-auto flex items-center gap-1.5 shrink-0">
+          <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[10px] font-medium text-amber-800">
+            {defaultModel || 'default model'}
+          </span>
+          <span className="inline-flex items-center rounded-full border border-stone-200 bg-stone-50 px-2.5 py-1 text-[10px] font-medium text-stone-600">
+            {defaultProvider}
+          </span>
+          <span className="inline-flex items-center rounded-full border border-stone-200 bg-white px-2.5 py-1 text-[10px] font-medium text-stone-500">
+            Sidecar localhost:8801
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -624,7 +620,6 @@ export function App() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [abortingRunId, setAbortingRunId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [showArchivedSessions, setShowArchivedSessions] = useState(false);
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
   const { events, sendCommand } = useEventStream(sessionId);
 
@@ -787,21 +782,6 @@ export function App() {
     }
   };
 
-  const handleDeleteSession = async (targetSessionId: string) => {
-    await fetch(`/api/sessions/${targetSessionId}`, { method: 'DELETE' });
-    if (sessionId === targetSessionId) {
-      setSessionId(null);
-      setAbortingRunId(null);
-      setPendingApprovals([]);
-    }
-    setSessionLabels((current) => {
-      const next = { ...current };
-      delete next[targetSessionId];
-      return next;
-    });
-    refreshSessions();
-  };
-
   const openSession = (session: SessionSummary) => {
     setSessionId(session.id);
     setDeploying(false);
@@ -893,13 +873,10 @@ export function App() {
           selectedSessionId={sessionId}
           sessionLabels={sessionLabels}
           collapsed={sidebarCollapsed}
-          showArchived={showArchivedSessions}
           onOpenCreateModal={() => setShowCreateModal(true)}
           onSelectSession={openSession}
-          onDeleteSession={handleDeleteSession}
           onRenameSession={handleRenameSession}
           onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
-          onToggleArchived={() => setShowArchivedSessions((value) => !value)}
         />
 
         <main className="flex-1 min-w-0 flex flex-col overflow-hidden">

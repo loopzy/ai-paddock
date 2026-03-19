@@ -22,10 +22,10 @@ const STAGES: DeployStage[] = [
 
 function StatusIcon({ status }: { status: 'done' | 'active' | 'pending' | 'error' }) {
   switch (status) {
-    case 'done': return <span className="text-green-400 text-sm">&#10003;</span>;
-    case 'active': return <span className="text-cyan-400 text-sm animate-pulse">&#9679;</span>;
-    case 'error': return <span className="text-red-400 text-sm">&#10007;</span>;
-    default: return <span className="text-gray-600 text-sm">&#9675;</span>;
+    case 'done': return <span className="text-emerald-600 text-sm">&#10003;</span>;
+    case 'active': return <span className="text-amber-600 text-sm animate-pulse">&#9679;</span>;
+    case 'error': return <span className="text-rose-600 text-sm">&#10007;</span>;
+    default: return <span className="text-stone-400 text-sm">&#9675;</span>;
   }
 }
 
@@ -42,38 +42,38 @@ export function DeployPipeline({ events }: { events: PaddockEvent[] }) {
         const status = getDeployStageStatus(steps, stage.phases, hasError);
         const stageSteps = steps.filter(e => stage.phases.includes(e.payload.phase as string));
         return (
-          <div key={stage.label}>
+            <div key={stage.label}>
             <div className="flex items-center gap-2 py-1">
               <StatusIcon status={status} />
-              <span className={`text-xs font-medium ${status === 'done' ? 'text-green-400' : status === 'active' ? 'text-cyan-300' : status === 'error' ? 'text-red-400' : 'text-gray-600'}`}>
+              <span className={`text-xs font-medium ${status === 'done' ? 'text-emerald-700' : status === 'active' ? 'text-amber-700' : status === 'error' ? 'text-rose-700' : 'text-stone-500'}`}>
                 {stage.label}
               </span>
             </div>
             {stageSteps.length > 0 && (
-              <div className="ml-5 border-l border-gray-800 pl-3 space-y-0.5 mb-1">
+              <div className="ml-5 border-l border-stone-200 pl-3 space-y-0.5 mb-1">
                 {stageSteps.map(e => {
                   const elapsed = stageSteps.indexOf(e) > 0
                     ? `${((e.timestamp - stageSteps[stageSteps.indexOf(e) - 1].timestamp) / 1000).toFixed(1)}s`
                     : '';
                   return (
                     <div key={e.id} className="flex items-center gap-2 text-[11px] py-0.5">
-                      <span className="text-gray-500">{e.payload.message as string}</span>
-                      {elapsed && <span className="text-gray-700">{elapsed}</span>}
+                      <span className="text-stone-500">{e.payload.message as string}</span>
+                      {elapsed && <span className="text-stone-400">{elapsed}</span>}
                     </div>
                   );
                 })}
               </div>
             )}
             {si < STAGES.length - 1 && status !== 'pending' && (
-              <div className="ml-[7px] h-2 border-l border-gray-800" />
+              <div className="ml-[7px] h-2 border-l border-stone-200" />
             )}
           </div>
         );
       })}
       {errorEvent && (
         <div className="flex items-center gap-2 text-xs py-1 mt-1">
-          <span className="text-red-400 font-bold">!!</span>
-          <span className="text-red-400">{errorEvent.payload.error as string}</span>
+          <span className="text-rose-600 font-bold">!!</span>
+          <span className="text-rose-700">{errorEvent.payload.error as string}</span>
         </div>
       )}
       <div ref={endRef} />

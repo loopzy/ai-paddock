@@ -7,6 +7,13 @@ export interface CommandEventLike {
 }
 
 export type CommandRunStatus = 'running' | 'completed' | 'failed' | 'aborted';
+export type CommandTagTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger';
+
+export interface CommandTag {
+  label: string;
+  tone?: CommandTagTone;
+}
+
 export type CommandStepKind =
   | 'llm-request'
   | 'llm-response'
@@ -23,8 +30,13 @@ export interface CommandStep {
   eventId: string;
   kind: CommandStepKind;
   title: string;
+  meta?: string;
+  tags?: CommandTag[];
   summary?: string;
   detail?: string;
+  body?: string;
+  rawDetail?: string;
+  rawLabel?: string;
   timestamp: number;
   status?: 'running' | 'completed' | 'failed' | 'blocked';
   children: CommandStep[];
@@ -44,6 +56,9 @@ export interface CommandRun {
   approvals: number;
   blockers: number;
   llmTurns: number;
+  totalTokensIn: number;
+  totalTokensOut: number;
+  totalTokens: number;
   rawEvents: CommandEventLike[];
   rawEventCount: number;
   hasRawLogs: boolean;
@@ -71,8 +86,48 @@ function safeJson(value: unknown): string | undefined {
   }
 }
 
+function appendRawSection(current: string | undefined, label: string, value: unknown): string | undefined {
+  const json = safeJson(value);
+  if (!json) return current;
+  const section = `${label}\n${json}`;
+  return current ? `${current}\n\n${section}` : section;
+}
+
+function joinSections(...sections: Array<string | undefined>): string | undefined {
+  const compact = sections.map((section) => section?.trim()).filter((section): section is string => Boolean(section));
+  return compact.length > 0 ? compact.join('\n\n') : undefined;
+}
+
+function isStructuredText(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    trimmed.startsWith('{') ||
+    trimmed.startsWith('[') ||
+    trimmed.includes('<<<EXTERNAL_UNTRUSTED_CONTENT') ||
+    trimmed.includes('"provider"') ||
+    trimmed.includes('"query"')
+  );
+}
+
+function pickHumanBody(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (isStructuredText(value)) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed;
+}
+
 function collapseWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
+}
+
+function sanitizeQuotedQuery(value: string): string {
+  let cleaned = value.trim();
+  cleaned = cleaned.replace(/^[：:]+\s*/, '');
+  cleaned = cleaned.replace(/^[`"'“”'']+/, '');
+  cleaned = cleaned.replace(/[`"'“”'']+$/, '');
+  cleaned = collapseWhitespace(cleaned);
+  return cleaned;
 }
 
 function formatKeyValueLines(value: unknown, indent = 0): string[] {
@@ -114,10 +169,6 @@ function formatMessageTranscript(messages: unknown): string | undefined {
 
 function formatLlmResponseDetail(payload: Record<string, unknown>): string | undefined {
   const lines: string[] = [];
-  const preview = getString(payload.responsePreview);
-  if (preview) {
-    lines.push(collapseWhitespace(preview));
-  }
   const metrics: string[] = [];
   if (typeof payload.tokensIn === 'number') metrics.push(`tokens in: ${payload.tokensIn}`);
   if (typeof payload.tokensOut === 'number') metrics.push(`tokens out: ${payload.tokensOut}`);
@@ -126,6 +177,44 @@ function formatLlmResponseDetail(payload: Record<string, unknown>): string | und
     lines.push(metrics.join(' · '));
   }
   return lines.length > 0 ? lines.join('\n\n') : undefined;
+}
+
+function getTokenUsage(payload: Record<string, unknown>): {
+  tokensIn?: number;
+  tokensOut?: number;
+  durationMs?: number;
+} {
+  return {
+    tokensIn: typeof payload.tokensIn === 'number' ? payload.tokensIn : undefined,
+    tokensOut: typeof payload.tokensOut === 'number' ? payload.tokensOut : undefined,
+    durationMs: typeof payload.durationMs === 'number' ? payload.durationMs : undefined,
+  };
+}
+
+function formatCompactCount(value: number): string {
+  if (value >= 1000) {
+    const compact = value / 1000;
+    return compact >= 10 ? `${compact.toFixed(0)}k` : `${compact.toFixed(1)}k`;
+  }
+  return String(value);
+}
+
+function formatTokenMeta(payload: Record<string, unknown>): string | undefined {
+  const { tokensIn, tokensOut, durationMs } = getTokenUsage(payload);
+  const parts: string[] = [];
+  if (tokensIn !== undefined) parts.push(`${formatCompactCount(tokensIn)} in`);
+  if (tokensOut !== undefined) parts.push(`${formatCompactCount(tokensOut)} out`);
+  if (durationMs !== undefined) parts.push(`${(durationMs / 1000).toFixed(durationMs >= 10_000 ? 0 : 1)}s`);
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
+function joinMetaParts(...parts: Array<string | undefined>): string | undefined {
+  const compact = parts.map((part) => part?.trim()).filter((part): part is string => Boolean(part));
+  return compact.length > 0 ? compact.join(' · ') : undefined;
+}
+
+function looksLikeToolCallPreview(value: string): boolean {
+  return /\[tool\]/i.test(value);
 }
 
 function formatToolInputDetail(toolInput: Record<string, unknown>): string | undefined {
@@ -189,6 +278,11 @@ function formatToolResultDetail(payload: Record<string, unknown>): string | unde
   return lines.length > 0 ? lines.join('\n\n') : undefined;
 }
 
+function truncateText(value: string, limit = 220): string {
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit - 1)}…`;
+}
+
 function summarizeToolInput(toolName: string, toolInput: Record<string, unknown>): string {
   if (toolName === 'browser') {
     const action = getString(toolInput.action) ?? 'act';
@@ -212,7 +306,11 @@ function summarizeToolInput(toolName: string, toolInput: Record<string, unknown>
   }
 
   if (toolName === 'web_fetch' || toolName === 'web_search') {
-    return getString(toolInput.url) ?? getString(toolInput.query) ?? 'request';
+    const url = getString(toolInput.url);
+    if (url) return url;
+    const query = getString(toolInput.query);
+    if (query) return sanitizeQuotedQuery(query) || 'search query';
+    return 'request';
   }
 
   if (toolName === 'write' || toolName === 'edit' || toolName === 'read' || toolName === 'apply_patch') {
@@ -329,8 +427,13 @@ function createStep(
   event: CommandEventLike,
   kind: CommandStepKind,
   title: string,
+  meta?: string,
+  tags?: CommandTag[],
   summary?: string,
   detail?: string,
+  body?: string,
+  rawDetail?: string,
+  rawLabel?: string,
   status?: CommandStep['status'],
 ): CommandStep {
   return {
@@ -338,8 +441,13 @@ function createStep(
     eventId: event.id,
     kind,
     title,
+    meta,
+    tags,
     summary,
     detail,
+    body,
+    rawDetail,
+    rawLabel,
     timestamp: event.timestamp,
     status,
     children: [],
@@ -401,13 +509,20 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
       getString(blockEvents.find((event) => event.type === 'amp.user.command')?.payload.runId) ??
       getString(blockEvents.find((event) => getRunId(event))?.payload.runId);
 
+    const lastAgentReply = [...blockEvents]
+      .reverse()
+      .find((event) => event.type === 'amp.agent.message');
+    const lastTerminalLlmResponse = [...blockEvents]
+      .reverse()
+      .find((event) => {
+        if (!['llm.response', 'amp.llm.response'].includes(event.type)) return false;
+        const preview = getString(event.payload.responsePreview);
+        return Boolean(preview && !looksLikeToolCallPreview(preview));
+      });
     const responseText =
-      getString(
-        [...blockEvents]
-          .reverse()
-          .find((event) => event.type === 'amp.agent.message')
-          ?.payload.text,
-      ) ?? undefined;
+      getString(lastAgentReply?.payload.text) ??
+      getString(lastTerminalLlmResponse?.payload.responsePreview) ??
+      undefined;
 
     const latestError =
       getString(
@@ -430,21 +545,30 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
         .filter((value): value is string => Boolean(value)),
     )];
 
-    const aborted = blockEvents.some(
-      (event) => event.type === 'amp.command.status' && getString(event.payload.status) === 'aborted',
+    const lastCommandStatus = getString(
+      [...blockEvents]
+        .reverse()
+        .find((event) => event.type === 'amp.command.status')
+        ?.payload.status,
     );
-    const failed = blockEvents.some((event) =>
-      event.type === 'amp.agent.fatal' ||
-      (event.type === 'session.status' && getString(event.payload.status) === 'error') ||
-      event.type === 'amp.agent.error',
-    );
+    const aborted = lastCommandStatus === 'aborted';
+    const failed =
+      ['failed', 'error'].includes(lastCommandStatus ?? '') ||
+      blockEvents.some((event) =>
+        event.type === 'amp.agent.fatal' ||
+        (event.type === 'session.status' && getString(event.payload.status) === 'error') ||
+        event.type === 'amp.agent.error',
+      );
+    const completed =
+      ['completed', 'complete', 'finished', 'done', 'succeeded'].includes(lastCommandStatus ?? '') ||
+      Boolean(responseText);
 
-    const status: CommandRunStatus = responseText
-      ? 'completed'
-      : aborted
-        ? 'aborted'
-        : failed
-          ? 'failed'
+    const status: CommandRunStatus = aborted
+      ? 'aborted'
+      : failed
+        ? 'failed'
+        : completed
+          ? 'completed'
           : 'running';
 
     const steps: CommandStep[] = [];
@@ -456,12 +580,19 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
       switch (event.type) {
         case 'llm.request':
         case 'amp.llm.request': {
+          const provider = getString(payload.provider) ?? 'provider';
+          const model = getString(payload.model) ?? 'model';
           const step = createStep(
             event,
             'llm-request',
-            `LLM turn · ${getString(payload.provider) ?? 'provider'} / ${getString(payload.model) ?? 'model'}`,
-            summarizeLLMRequest(payload),
-            formatMessageTranscript(payload.messagesPreview),
+            model,
+            provider,
+            [],
+            undefined,
+            undefined,
+            undefined,
+            appendRawSection(undefined, 'Request payload', payload),
+            'Turn payload',
             'running',
           );
           steps.push(step);
@@ -471,28 +602,53 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
         }
         case 'llm.response':
         case 'amp.llm.response': {
-          const step = createStep(
-            event,
-            'llm-response',
-            'LLM response',
-            summarizeLLMResponse(payload),
-            formatLlmResponseDetail(payload),
-            'completed',
-          );
-          addChildStep(currentLLMStep, step, steps);
+          const preview = getString(payload.responsePreview);
+          const metrics = formatTokenMeta(payload);
+          const previewBody = preview && !isStructuredText(preview) ? preview.trim() : undefined;
+          if (currentLLMStep) {
+            currentLLMStep.meta = joinMetaParts(currentLLMStep.meta, metrics);
+            currentLLMStep.summary = previewBody ? undefined : summarizeLLMResponse(payload);
+            currentLLMStep.detail = undefined;
+            currentLLMStep.body = previewBody ?? currentLLMStep.body;
+            currentLLMStep.rawDetail = appendRawSection(currentLLMStep.rawDetail, 'Response payload', payload);
+            currentLLMStep.rawLabel = joinMetaParts('Turn payload', metrics);
+            currentLLMStep.status = looksLikeToolCallPreview(previewBody ?? '') ? 'running' : 'completed';
+          } else {
+            const fallback = createStep(
+              event,
+              'llm-request',
+              getString(payload.model) ?? 'model',
+              joinMetaParts(getString(payload.provider) ?? 'provider', metrics),
+              [],
+              previewBody ? undefined : summarizeLLMResponse(payload),
+              undefined,
+              previewBody,
+              appendRawSection(undefined, 'Response payload', payload),
+              joinMetaParts('Turn payload', metrics),
+              looksLikeToolCallPreview(previewBody ?? '') ? 'running' : 'completed',
+            );
+            steps.push(fallback);
+            currentLLMStep = fallback;
+          }
           break;
         }
         case 'amp.tool.intent': {
           const toolName = getString(payload.toolName) ?? 'tool';
-          const toolInput = payload.toolInput && typeof payload.toolInput === 'object'
-            ? (payload.toolInput as Record<string, unknown>)
-            : {};
+          const toolInput =
+            payload.toolInput && typeof payload.toolInput === 'object'
+              ? (payload.toolInput as Record<string, unknown>)
+              : {};
           const step = createStep(
             event,
             'tool-intent',
-            `Tool · ${toolName}`,
+            toolName,
+            undefined,
+            [],
             summarizeToolInput(toolName, toolInput),
             formatToolInputDetail(toolInput),
+            undefined,
+            appendRawSection(undefined, 'Intent payload', payload),
+            'Tool payload',
             'running',
           );
           addChildStep(currentLLMStep, step, steps);
@@ -506,29 +662,56 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
             payload.behaviorReview && typeof payload.behaviorReview === 'object'
               ? (payload.behaviorReview as Record<string, unknown>)
               : undefined;
-          const behaviorSource = getString(behaviorReview?.source);
-          const behaviorRisk = typeof behaviorReview?.riskBoost === 'number' ? behaviorReview.riskBoost : undefined;
-          const step = createStep(
-            event,
-            'gate-verdict',
-            `Policy · ${verdict}`,
-            `Risk ${riskScore}${behaviorSource ? ` · ${behaviorSource}${behaviorRisk !== undefined ? ` +${behaviorRisk}` : ''}` : ''}${Array.isArray(payload.triggeredRules) && payload.triggeredRules.length > 0 ? ` · ${(payload.triggeredRules as string[]).join(', ')}` : ''}`,
-            formatGateVerdictDetail(payload),
-            verdict === 'reject' ? 'blocked' : verdict === 'ask' ? 'blocked' : 'completed',
-          );
-          addChildStep(currentToolStep ?? currentLLMStep, step, steps);
+          const verdictTone =
+            verdict === 'approve' ? 'success' :
+            verdict === 'reject' ? 'danger' :
+            verdict === 'ask' ? 'warning' :
+            'info';
+          const riskTone =
+            riskScore >= 60 ? 'danger' :
+            riskScore >= 20 ? 'warning' :
+            'neutral';
+          const target = currentToolStep ?? currentLLMStep;
+          if (target) {
+            target.tags = [
+              ...(target.tags ?? []),
+              { label: verdict === 'ask' ? 'Needs approval' : verdict[0].toUpperCase() + verdict.slice(1), tone: verdictTone },
+              { label: `Risk ${riskScore}`, tone: riskTone },
+            ];
+            target.detail = joinSections(target.detail, formatGateVerdictDetail(payload));
+            target.rawDetail = appendRawSection(target.rawDetail, 'Gate verdict', payload);
+            target.status = verdict === 'reject' || verdict === 'ask' ? 'blocked' : target.status;
+          }
           break;
         }
         case 'amp.tool.result': {
-          const step = createStep(
-            event,
-            'tool-result',
-            `Result · ${getString(payload.toolName) ?? 'tool'}`,
-            summarizeToolResult(event) ?? 'completed',
-            formatToolResultDetail(payload),
-            getString(payload.error) ? 'failed' : 'completed',
-          );
-          addChildStep(currentToolStep ?? currentLLMStep, step, steps);
+          const textResult = extractToolResultText(payload.result);
+          const target = currentToolStep ?? currentLLMStep;
+          if (target) {
+            target.tags = [
+              ...(target.tags ?? []),
+              { label: getString(payload.error) ? 'Failed' : 'Done', tone: getString(payload.error) ? 'danger' : 'success' },
+            ];
+            target.detail = joinSections(target.detail, formatToolResultDetail(payload));
+            target.body = pickHumanBody(textResult) ?? target.body;
+            target.rawDetail = appendRawSection(target.rawDetail, 'Result payload', payload.result ?? payload);
+            target.status = getString(payload.error) ? 'failed' : 'completed';
+          } else {
+            const step = createStep(
+              event,
+              'tool-result',
+              getString(payload.toolName) ?? 'tool',
+              undefined,
+              [{ label: getString(payload.error) ? 'Failed' : 'Done', tone: getString(payload.error) ? 'danger' : 'success' }],
+              summarizeToolResult(event) ?? 'completed',
+              formatToolResultDetail(payload),
+              pickHumanBody(textResult),
+              appendRawSection(undefined, 'Result payload', payload.result ?? payload),
+              'Tool payload',
+              getString(payload.error) ? 'failed' : 'completed',
+            );
+            steps.push(step);
+          }
           currentToolStep = null;
           break;
         }
@@ -537,9 +720,14 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
           const step = createStep(
             event,
             'agent-message',
-            'Final reply',
-            text.slice(0, 180),
+            'Final answer',
+            undefined,
+            [],
+            truncateText(text, 180),
+            undefined,
             text,
+            appendRawSection(undefined, 'Reply payload', payload),
+            'Reply payload',
             'completed',
           );
           steps.push(step);
@@ -549,12 +737,25 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
         }
         case 'amp.agent.error':
         case 'amp.agent.fatal': {
+          const message = getString(payload.message) ?? 'Unknown error';
+          const tags: CommandTag[] = [
+            { label: event.type === 'amp.agent.fatal' ? 'Fatal' : 'Error', tone: event.type === 'amp.agent.fatal' ? 'danger' : 'warning' },
+          ];
+          const category = getString(payload.category);
+          if (category) {
+            tags.push({ label: category, tone: 'neutral' });
+          }
           const step = createStep(
             event,
             'agent-error',
             event.type === 'amp.agent.fatal' ? 'Fatal error' : 'Agent error',
-            getString(payload.message) ?? 'Unknown error',
-            safeJson(payload),
+            undefined,
+            tags,
+            truncateText(message, 180),
+            undefined,
+            message,
+            appendRawSection(undefined, 'Error payload', payload),
+            'Error payload',
             'failed',
           );
           steps.push(step);
@@ -563,27 +764,20 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
           break;
         }
         case 'amp.command.status': {
+          const statusLabel = getString(payload.status) ?? 'updated';
+          if (['accepted', 'running'].includes(statusLabel)) break;
           const step = createStep(
             event,
             'command-status',
-            `Command ${getString(payload.status) ?? 'updated'}`,
+            `Command ${statusLabel}`,
+            undefined,
+            [{ label: statusLabel, tone: statusLabel === 'aborted' ? 'warning' : 'neutral' }],
             getString(payload.command),
-            safeJson(payload),
-            getString(payload.status) === 'aborted' ? 'blocked' : 'completed',
-          );
-          steps.push(step);
-          break;
-        }
-        case 'amp.session.start': {
-          const message = getString(payload.message);
-          if (!message) break;
-          const step = createStep(
-            event,
-            'system',
-            'System',
-            message,
-            safeJson(payload),
-            'completed',
+            undefined,
+            undefined,
+            appendRawSection(undefined, 'Status payload', payload),
+            'Status payload',
+            statusLabel === 'aborted' ? 'blocked' : 'completed',
           );
           steps.push(step);
           break;
@@ -615,6 +809,22 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
           ['reject', 'ask'].includes(getString(event.payload.verdict) ?? ''),
       ).length,
       llmTurns: blockEvents.filter((event) => event.type === 'llm.request' || event.type === 'amp.llm.request').length,
+      totalTokensIn: blockEvents.reduce((sum, event) => {
+        if (!['llm.response', 'amp.llm.response'].includes(event.type)) return sum;
+        return sum + (typeof event.payload.tokensIn === 'number' ? event.payload.tokensIn : 0);
+      }, 0),
+      totalTokensOut: blockEvents.reduce((sum, event) => {
+        if (!['llm.response', 'amp.llm.response'].includes(event.type)) return sum;
+        return sum + (typeof event.payload.tokensOut === 'number' ? event.payload.tokensOut : 0);
+      }, 0),
+      totalTokens: blockEvents.reduce((sum, event) => {
+        if (!['llm.response', 'amp.llm.response'].includes(event.type)) return sum;
+        return (
+          sum +
+          (typeof event.payload.tokensIn === 'number' ? event.payload.tokensIn : 0) +
+          (typeof event.payload.tokensOut === 'number' ? event.payload.tokensOut : 0)
+        );
+      }, 0),
       rawEvents: blockEvents,
       rawEventCount: blockEvents.length,
       hasRawLogs: blockEvents.length > 0,
