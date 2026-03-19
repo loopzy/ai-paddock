@@ -174,7 +174,11 @@ function summarizeStep(event: CommandEventLike): string | null {
     case 'amp.gate.verdict': {
       const verdict = getString(payload.verdict) ?? 'approve';
       const riskScore = typeof payload.riskScore === 'number' ? payload.riskScore : 0;
-      return `Policy ${verdict} · risk ${riskScore}`;
+      const behaviorSource = getString((payload.behaviorReview as Record<string, unknown> | undefined)?.source);
+      const behaviorRisk = typeof (payload.behaviorReview as Record<string, unknown> | undefined)?.riskBoost === 'number'
+        ? ((payload.behaviorReview as Record<string, unknown>).riskBoost as number)
+        : 0;
+      return `Policy ${verdict} · risk ${riskScore}${behaviorSource ? ` · ${behaviorSource} +${behaviorRisk}` : ''}`;
     }
     case 'amp.agent.message':
       return `Reply: ${(getString(payload.text) ?? '').slice(0, 120)}`;
@@ -385,11 +389,17 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
         case 'amp.gate.verdict': {
           const verdict = getString(payload.verdict) ?? 'approve';
           const riskScore = typeof payload.riskScore === 'number' ? payload.riskScore : 0;
+          const behaviorReview =
+            payload.behaviorReview && typeof payload.behaviorReview === 'object'
+              ? (payload.behaviorReview as Record<string, unknown>)
+              : undefined;
+          const behaviorSource = getString(behaviorReview?.source);
+          const behaviorRisk = typeof behaviorReview?.riskBoost === 'number' ? behaviorReview.riskBoost : undefined;
           const step = createStep(
             event,
             'gate-verdict',
             `Policy · ${verdict}`,
-            `Risk ${riskScore}${Array.isArray(payload.triggeredRules) && payload.triggeredRules.length > 0 ? ` · ${(payload.triggeredRules as string[]).join(', ')}` : ''}`,
+            `Risk ${riskScore}${behaviorSource ? ` · ${behaviorSource}${behaviorRisk !== undefined ? ` +${behaviorRisk}` : ''}` : ''}${Array.isArray(payload.triggeredRules) && payload.triggeredRules.length > 0 ? ` · ${(payload.triggeredRules as string[]).join(', ')}` : ''}`,
             safeJson(payload),
             verdict === 'reject' ? 'blocked' : verdict === 'ask' ? 'blocked' : 'completed',
           );

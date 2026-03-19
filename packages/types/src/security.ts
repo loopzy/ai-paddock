@@ -62,9 +62,12 @@ export interface BehaviorResult {
   riskBoost: number;
   triggered: string[];
   loopVerdict?: LoopVerdict;
+  reason?: string;
+  confidence?: number;
+  source?: string;
 }
 
 export interface BehaviorAnalyzerProvider {
-  evaluate(event: ToolEvent, lastResult?: string): BehaviorResult;
+  evaluate(event: ToolEvent, lastResult?: string): BehaviorResult | Promise<BehaviorResult>;
   reset(): void;
 }

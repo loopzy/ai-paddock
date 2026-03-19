@@ -50,6 +50,19 @@ export interface AMPGateVerdict {
   riskScore: number;
   triggeredRules: string[];
   behaviorFlags?: string[];
+  behaviorReview?: {
+    riskBoost: number;
+    triggered: string[];
+    reason?: string;
+    confidence?: number;
+    source?: string;
+  };
+  riskBreakdown?: {
+    rules: number;
+    taint: number;
+    behavior: number;
+    trustPenalty: number;
+  };
   reason?: string;
   modifiedInput?: Record<string, unknown>;
   snapshotRef?: string;

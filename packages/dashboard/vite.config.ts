@@ -4,10 +4,13 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 3200,
+    port: Number(process.env.PADDOCK_DASHBOARD_PORT ?? 3200),
     proxy: {
-      '/api': 'http://localhost:3100',
-      '/ws': { target: 'ws://localhost:3100', ws: true },
+      '/api': process.env.PADDOCK_CONTROL_PLANE_URL ?? 'http://localhost:3100',
+      '/ws': {
+        target: (process.env.PADDOCK_CONTROL_PLANE_URL ?? 'http://localhost:3100').replace(/^http/i, 'ws'),
+        ws: true,
+      },
     },
   },
 });

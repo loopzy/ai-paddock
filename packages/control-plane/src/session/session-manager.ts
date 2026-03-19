@@ -26,6 +26,14 @@ const SANDBOX_PACKAGE_MANAGER_MAP: Partial<Record<SandboxType, GuestPackageManag
   'computer-box': 'apt',
 };
 
+function shellEscape(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+  return typeof value === 'string' && ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+}
+
 /**
  * Session Manager — orchestrates agent sessions with sandbox lifecycle.
  * Now supports multiple sandbox types via SandboxDriver interface.
@@ -324,11 +332,27 @@ export class SessionManager {
       this.eventStore.append(sessionId, 'amp.session.start', { phase: 'sidecar.start', message: 'Starting Sidecar process...' });
       const controlUrl = await this.resolveControlPlaneUrlForVm(driver, vmId);
       const controlUrlCandidates = JSON.stringify(this.getControlPlaneUrlCandidates());
+      const behaviorEnv = this.getSidecarBehaviorEnv(controlUrl);
+      if (behaviorEnv.summary) {
+        this.eventStore.append(sessionId, 'amp.session.start', {
+          phase: 'sidecar.behavior_review',
+          message: behaviorEnv.summary,
+        });
+      }
+      const sidecarEnv = [
+        'NO_PROXY=127.0.0.1,localhost',
+        `PADDOCK_SESSION_ID=${shellEscape(sessionId)}`,
+        `PADDOCK_CONTROL_URL=${shellEscape(controlUrl)}`,
+        `PADDOCK_CONTROL_URL_CANDIDATES=${shellEscape(controlUrlCandidates)}`,
+        'PADDOCK_WATCH_DIR=/workspace',
+        'PADDOCK_PROXY_PORT=8800',
+        ...behaviorEnv.entries,
+      ].join(' ');
       // sidecar files are at /opt/paddock/sidecar/ due to copyIn behavior
       await this.execOrThrow(
         driver,
         vmId,
-        `cd /opt/paddock/sidecar && NO_PROXY=127.0.0.1,localhost PADDOCK_SESSION_ID=${sessionId} PADDOCK_CONTROL_URL='${controlUrl}' PADDOCK_CONTROL_URL_CANDIDATES='${controlUrlCandidates}' PADDOCK_WATCH_DIR=/workspace PADDOCK_PROXY_PORT=8800 nohup node index.js > /var/log/paddock-sidecar.log 2>&1 & echo $! > /var/run/paddock-sidecar.pid`,
+        `cd /opt/paddock/sidecar && ${sidecarEnv} nohup node index.js > /var/log/paddock-sidecar.log 2>&1 & echo $! > /var/run/paddock-sidecar.pid`,
         'Failed to start Sidecar process',
       );
 
@@ -945,6 +969,50 @@ export class SessionManager {
     }
 
     return Array.from(candidates);
+  }
+
+  private getSidecarBehaviorEnv(controlUrl: string): { entries: string[]; summary?: string } {
+    if (!isTruthyEnv(process.env.PADDOCK_BEHAVIOR_LLM_ENABLED)) {
+      return { entries: [] };
+    }
+
+    const entries = ['PADDOCK_BEHAVIOR_LLM_ENABLED=1'];
+    const provider = process.env.PADDOCK_BEHAVIOR_LLM_PROVIDER?.trim().toLowerCase() ?? 'ollama';
+    entries.push(`PADDOCK_BEHAVIOR_LLM_PROVIDER=${shellEscape(provider)}`);
+
+    const model = process.env.PADDOCK_BEHAVIOR_LLM_MODEL?.trim();
+    if (model) {
+      entries.push(`PADDOCK_BEHAVIOR_LLM_MODEL=${shellEscape(model)}`);
+    }
+
+    let baseUrl = process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL?.trim();
+    if (provider === 'ollama') {
+      baseUrl = `${controlUrl.replace(/\/+$/, '')}/api/behavior-llm/ollama`;
+    }
+    if (baseUrl) {
+      entries.push(`PADDOCK_BEHAVIOR_LLM_BASE_URL=${shellEscape(baseUrl)}`);
+    }
+
+    const passthroughEnvVars = [
+      'PADDOCK_BEHAVIOR_LLM_API_KEY',
+      'PADDOCK_BEHAVIOR_LLM_TIMEOUT_MS',
+      'PADDOCK_BEHAVIOR_LLM_TEMPERATURE',
+      'PADDOCK_BEHAVIOR_LLM_MAX_TOKENS',
+      'PADDOCK_BEHAVIOR_LLM_MAX_WINDOW',
+      'PADDOCK_BEHAVIOR_LLM_MAX_RISK_BOOST',
+    ] as const;
+
+    for (const envName of passthroughEnvVars) {
+      const value = process.env[envName]?.trim();
+      if (value) {
+        entries.push(`${envName}=${shellEscape(value)}`);
+      }
+    }
+
+    return {
+      entries,
+      summary: `Behavior review LLM enabled (${provider}${model ? ` / ${model}` : ''}) via ${baseUrl ?? '(default)'}`,
+    };
   }
 
   private async resolveControlPlaneUrlForVm(driver: SandboxDriver, vmId: string): Promise<string> {

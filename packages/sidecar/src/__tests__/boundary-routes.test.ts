@@ -217,6 +217,8 @@ describe('Sidecar boundary routes', () => {
         riskScore: 12,
         triggeredRules: [],
         behaviorFlags: undefined,
+        behaviorReview: undefined,
+        riskBreakdown: undefined,
         snapshotRef: 'snap-checkpoint-1',
       },
       opts: { correlationId: 'corr-write-1', snapshotRef: 'snap-checkpoint-1' },

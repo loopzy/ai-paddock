@@ -5,6 +5,7 @@ import { FSWatcher } from './fs-watcher/watcher.js';
 import { EventReporter } from './reporter.js';
 import { ControlPlaneClient, parseControlPlaneUrls } from './control-plane-client.js';
 import { PolicyGate } from './security/policy-gate.js';
+import { createBehaviorAnalyzerFromEnv, getBehaviorLLMConfigFromEnv } from './security/behavior-analyzer-factory.js';
 import { AgentMonitor } from './agent-monitor.js';
 import { abortAgentCommand, createOpenClawGatewayAborter, createOpenClawGatewayInvoker, routeAgentCommand } from './command-router.js';
 import type { AMPGateRequest, AMPGateVerdict, AMPAgentError } from '@paddock/types';
@@ -27,9 +28,20 @@ async function main() {
   const controlPlaneClient = new ControlPlaneClient(parseControlPlaneUrls(CONTROL_PLANE_URL, CONTROL_PLANE_URL_CANDIDATES));
   const controlPlaneUrl = await controlPlaneClient.resolveReachable();
   console.log(`Resolved control plane URL: ${controlPlaneUrl}`);
+  const behaviorLLMConfig = getBehaviorLLMConfigFromEnv();
+  if (behaviorLLMConfig) {
+    console.log(
+      `Behavior review LLM enabled: provider=${behaviorLLMConfig.provider} model=${behaviorLLMConfig.model} baseUrl=${behaviorLLMConfig.baseUrl ?? '(default)'} timeoutMs=${behaviorLLMConfig.timeoutMs}`,
+    );
+  } else {
+    console.log('Behavior review LLM disabled');
+  }
 
   const reporter = new EventReporter(controlPlaneClient, SESSION_ID);
-  const policyGate = new PolicyGate(WATCH_DIR);
+  const policyGate = new PolicyGate({
+    workspace: WATCH_DIR,
+    behaviorAnalyzer: createBehaviorAnalyzerFromEnv(),
+  });
 
   // LLM Proxy
   const llmProxy = new LLMProxy(PROXY_PORT, reporter, controlPlaneClient, SESSION_ID);
@@ -138,7 +150,7 @@ export function createAmpGateRequestHandler(deps: AmpGateServerDeps) {
 async function handleGateRequest(req: IncomingMessage, res: ServerResponse, gate: PolicyGate, reporter: EventReporter, controlPlaneClient: ControlPlaneClient, sessionId: string) {
   try {
     const body = JSON.parse(await collectBody(req)) as AMPGateRequest;
-    const verdict = gate.evaluate(body);
+    const verdict = await gate.evaluate(body);
 
     // If verdict is 'ask', forward to Control Plane for HITL
     if (verdict.verdict === 'ask') {
@@ -179,12 +191,17 @@ async function handleGateRequest(req: IncomingMessage, res: ServerResponse, gate
         riskScore: verdict.riskScore,
         triggeredRules: verdict.triggeredRules,
         behaviorFlags: verdict.behaviorFlags,
+        behaviorReview: verdict.behaviorReview,
+        riskBreakdown: verdict.riskBreakdown,
         snapshotRef: verdict.snapshotRef,
       },
       {
         correlationId: body.correlationId,
         snapshotRef: verdict.snapshotRef,
       },
+    );
+    console.log(
+      `[amp.gate] tool=${body.toolName} verdict=${verdict.verdict} risk=${verdict.riskScore} rules=${verdict.triggeredRules.join('|') || 'none'} behaviorSource=${verdict.behaviorReview?.source ?? 'none'} behaviorRisk=${verdict.behaviorReview?.riskBoost ?? 0} trustPenalty=${verdict.riskBreakdown?.trustPenalty ?? 0}`,
     );
 
     res.writeHead(200, { 'Content-Type': 'application/json' });

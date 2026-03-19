@@ -125,6 +125,63 @@ function buildRiskHints(toolName, params) {
   return hints;
 }
 
+function normalizeShellStyledPath(value) {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  const trimmed = value.trim();
+  const redirectMatch = trimmed.match(/^(?::>|>)\s+(.+)$/);
+  if (redirectMatch) {
+    return redirectMatch[1].trim();
+  }
+  const catRedirectMatch = trimmed.match(/^cat\s+>\s+(.+)$/i);
+  if (catRedirectMatch) {
+    return catRedirectMatch[1].trim();
+  }
+  return value;
+}
+
+function normalizeExecCommand(command) {
+  if (typeof command !== 'string') {
+    return command;
+  }
+
+  const trimmed = command.trim();
+  const mkdirAfterRedirectMatch = trimmed.match(/^(?::>|>)\s+(.+?)\s*&&\s*mkdir\s+-p\s+(.+)$/i);
+  if (mkdirAfterRedirectMatch) {
+    const redirectedPath = mkdirAfterRedirectMatch[1].trim();
+    const mkdirPath = mkdirAfterRedirectMatch[2].trim();
+    if (redirectedPath === mkdirPath) {
+      return `mkdir -p ${mkdirPath}`;
+    }
+  }
+
+  return command;
+}
+
+function normalizeToolParams(toolName, params) {
+  if (!params || typeof params !== 'object') {
+    return params;
+  }
+
+  const normalized = { ...params };
+
+  if (['read', 'write', 'edit', 'apply_patch'].includes(toolName)) {
+    if (typeof normalized.path === 'string') {
+      normalized.path = normalizeShellStyledPath(normalized.path);
+    }
+    if (typeof normalized.file_path === 'string') {
+      normalized.file_path = normalizeShellStyledPath(normalized.file_path);
+    }
+  }
+
+  if (toolName === 'exec' && typeof normalized.command === 'string') {
+    normalized.command = normalizeExecCommand(normalized.command);
+  }
+
+  return normalized;
+}
+
 function keyFor(ctx, toolName) {
   return `${ctx?.runId ?? 'run'}:${ctx?.toolCallId ?? toolName}`;
 }
@@ -285,8 +342,9 @@ export default {
     api.on(
       'before_tool_call',
       async (event, ctx) => {
-        const params = event?.params && typeof event.params === 'object' ? { ...event.params } : {};
+        const rawParams = event?.params && typeof event.params === 'object' ? { ...event.params } : {};
         const toolName = typeof event?.toolName === 'string' ? event.toolName : 'unknown';
+        const params = normalizeToolParams(toolName, rawParams);
         const correlationId = randomUUID();
         const key = keyFor(ctx, toolName);
 

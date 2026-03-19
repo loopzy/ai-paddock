@@ -44,7 +44,7 @@ export class PolicyGate {
   /**
    * Evaluate a tool call and return a verdict.
    */
-  evaluate(req: AMPGateRequest): AMPGateVerdict {
+  async evaluate(req: AMPGateRequest): Promise<AMPGateVerdict> {
     const normalizedToolName = req.toolName.trim().toLowerCase();
     if (normalizedToolName === 'gateway') {
       this.recordAnomaly();
@@ -70,11 +70,14 @@ export class PolicyGate {
       path: String(req.toolInput.path ?? req.toolInput.file_path ?? ''),
       timestamp: Date.now(),
     };
-    const behavior = this.behaviorAnalyzer.evaluate(event);
+    const behavior = await this.behaviorAnalyzer.evaluate(event);
 
     // Composite scoring
-    let risk = Math.max(rules.baseRisk, taint.risk) + behavior.riskBoost;
-    risk += this.trustProfile.penaltyBoost;
+    const baseRisk = Math.max(rules.baseRisk, taint.risk);
+    const behaviorRisk = behavior.riskBoost;
+    const trustPenalty = this.trustProfile.penaltyBoost;
+    let risk = baseRisk + behaviorRisk;
+    risk += trustPenalty;
     risk = Math.min(risk, 100);
 
     // Monitor-first verdicts: keep capability available and escalate risky actions
@@ -100,6 +103,22 @@ export class PolicyGate {
       riskScore: risk,
       triggeredRules: allTriggered,
       behaviorFlags: behavior.triggered.length > 0 ? behavior.triggered : undefined,
+      behaviorReview:
+        behavior.source || behavior.reason || behavior.triggered.length > 0 || behavior.riskBoost > 0
+          ? {
+              riskBoost: behavior.riskBoost,
+              triggered: behavior.triggered,
+              reason: behavior.reason,
+              confidence: behavior.confidence,
+              source: behavior.source,
+            }
+          : undefined,
+      riskBreakdown: {
+        rules: rules.baseRisk,
+        taint: taint.risk,
+        behavior: behaviorRisk,
+        trustPenalty,
+      },
       reason: allTriggered.length > 0 ? allTriggered.join(', ') : undefined,
     };
   }

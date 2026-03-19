@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import type { PaddockEvent, EventType } from '../types.js';
 
 export type EventListener = (event: PaddockEvent) => void;
+type AppendOptions = { snapshotRef?: string; correlationId?: string; causedBy?: string };
+type AppendInput = { type: EventType; payload: Record<string, unknown> } & AppendOptions;
 
 export class EventStore {
   public db: Database.Database;
@@ -75,7 +77,7 @@ export class EventStore {
     return createHash('sha256').update(prevHash + content).digest('hex');
   }
 
-  append(sessionId: string, type: EventType, payload: Record<string, unknown>, opts?: { snapshotRef?: string; correlationId?: string; causedBy?: string }): PaddockEvent {
+  append(sessionId: string, type: EventType, payload: Record<string, unknown>, opts?: AppendOptions): PaddockEvent {
     const seq = this.nextSeq(sessionId);
     const prevHash = this.getLastHash(sessionId);
     const id = nanoid();
@@ -86,6 +88,62 @@ export class EventStore {
     this.db.prepare('INSERT INTO events (id, session_id, seq, timestamp, type, payload, snapshot_ref, correlation_id, caused_by, prev_hash, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, sessionId, seq, timestamp, type, payloadStr, opts?.snapshotRef ?? null, opts?.correlationId ?? null, opts?.causedBy ?? null, prevHash, hash);
     for (const fn of this.listeners) fn(event);
     return event;
+  }
+
+  appendMany(sessionId: string, inputs: AppendInput[]): PaddockEvent[] {
+    if (inputs.length === 0) {
+      return [];
+    }
+
+    const appended: PaddockEvent[] = [];
+    const run = this.db.transaction((batch: AppendInput[]) => {
+      let seq = this.nextSeq(sessionId);
+      let prevHash = this.getLastHash(sessionId);
+
+      for (const input of batch) {
+        const id = nanoid();
+        const timestamp = Date.now();
+        const payloadStr = JSON.stringify(input.payload);
+        const hash = this.computeHash(prevHash, `${id}:${seq}:${input.type}:${payloadStr}`);
+        const event: PaddockEvent = {
+          id,
+          sessionId,
+          seq,
+          timestamp,
+          type: input.type,
+          payload: input.payload,
+          correlationId: input.correlationId,
+          causedBy: input.causedBy,
+          snapshotRef: input.snapshotRef,
+        };
+        this.db
+          .prepare(
+            'INSERT INTO events (id, session_id, seq, timestamp, type, payload, snapshot_ref, correlation_id, caused_by, prev_hash, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          )
+          .run(
+            id,
+            sessionId,
+            seq,
+            timestamp,
+            input.type,
+            payloadStr,
+            input.snapshotRef ?? null,
+            input.correlationId ?? null,
+            input.causedBy ?? null,
+            prevHash,
+            hash,
+          );
+        appended.push(event);
+        prevHash = hash;
+        seq += 1;
+      }
+    });
+
+    run(inputs);
+    for (const event of appended) {
+      for (const fn of this.listeners) fn(event);
+    }
+    return appended;
   }
 
   getEvents(sessionId: string, opts?: { since?: number; types?: EventType[]; limit?: number }): PaddockEvent[] {

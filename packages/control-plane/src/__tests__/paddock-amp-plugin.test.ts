@@ -375,4 +375,83 @@ describe('paddock-amp-plugin', () => {
       ]),
     );
   });
+
+  it('normalizes shell-style write paths before reporting intent and continuing execution', async () => {
+    const plugin = await loadPlugin();
+    const api = createApi();
+    plugin.register(api);
+
+    const beforeToolCall = handlers.get('before_tool_call');
+    expect(beforeToolCall).toBeTypeOf('function');
+
+    const result = await beforeToolCall?.(
+      {
+        toolName: 'write',
+        params: {
+          path: ':> /workspace/paddock_probe/report.md',
+          content: 'hello',
+        },
+      },
+      {
+        runId: 'run-write-normalize',
+        toolCallId: 'tool-write-1',
+        agentId: 'main',
+        sessionKey: 'paddock:test',
+      },
+    );
+
+    expect(result).toEqual({
+      params: {
+        path: '/workspace/paddock_probe/report.md',
+        content: 'hello',
+      },
+    });
+
+    const intentCall = fetchMock.mock.calls
+      .filter(([url]) => String(url).includes('/amp/event'))
+      .map(([, init]) => JSON.parse(String((init as RequestInit | undefined)?.body ?? '{}')) as {
+        toolName: string;
+        result: string;
+      })
+      .find((entry) => entry.toolName === 'amp.tool.intent');
+
+    expect(intentCall).toBeTruthy();
+    expect(JSON.parse(String(intentCall?.result))).toMatchObject({
+      toolName: 'write',
+      toolInput: {
+        path: '/workspace/paddock_probe/report.md',
+        content: 'hello',
+      },
+    });
+  });
+
+  it('normalizes contradictory exec redirection-plus-mkdir commands into mkdir -p', async () => {
+    const plugin = await loadPlugin();
+    const api = createApi();
+    plugin.register(api);
+
+    const beforeToolCall = handlers.get('before_tool_call');
+    expect(beforeToolCall).toBeTypeOf('function');
+
+    const result = await beforeToolCall?.(
+      {
+        toolName: 'exec',
+        params: {
+          command: ':> /workspace/paddock_probe && mkdir -p /workspace/paddock_probe',
+        },
+      },
+      {
+        runId: 'run-exec-normalize',
+        toolCallId: 'tool-exec-1',
+        agentId: 'main',
+        sessionKey: 'paddock:test',
+      },
+    );
+
+    expect(result).toEqual({
+      params: {
+        command: 'mkdir -p /workspace/paddock_probe',
+      },
+    });
+  });
 });

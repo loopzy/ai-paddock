@@ -67,6 +67,14 @@ function parseLLMProxyError(result: { status: number; body: string }) {
   return { category: 'runtime', code: 'ERR_LLM_UPSTREAM', message };
 }
 
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, '');
+}
+
+function getBehaviorLLMOllamaTarget(): string {
+  return trimTrailingSlash(process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL?.trim() || 'http://127.0.0.1:11434');
+}
+
 interface Deps {
   eventStore: EventStore;
   sessionManager: SessionManager;
@@ -159,6 +167,25 @@ export function registerRoutes(app: FastifyInstance, deps: Deps) {
     return { ok: true };
   });
 
+  app.post('/api/behavior-llm/ollama/api/chat', async (req, reply) => {
+    const targetUrl = `${getBehaviorLLMOllamaTarget()}/api/chat`;
+    console.log(`[behavior-llm-relay] forwarding ollama review request to ${targetUrl}`);
+    const upstream = await fetch(targetUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body ?? {}),
+      signal: AbortSignal.timeout(35_000),
+    });
+
+    const responseBody = await upstream.text();
+    reply.code(upstream.status);
+    const contentType = upstream.headers.get('content-type');
+    if (contentType) {
+      reply.header('content-type', contentType);
+    }
+    return responseBody;
+  });
+
   // ─── Sessions ───
   app.post<{ Body: { agentType: string; sandboxType?: SandboxType; autoStart?: boolean } }>('/api/sessions', async (req) => {
     const session = await sessionManager.create(req.body.agentType, req.body.sandboxType);
@@ -236,6 +263,38 @@ export function registerRoutes(app: FastifyInstance, deps: Deps) {
     const { type, payload, correlationId, causedBy, snapshotRef } = req.body;
     const event = eventStore.append(sessionId, type, payload, { correlationId, causedBy, snapshotRef });
     return event;
+  });
+
+  app.post<{
+    Params: { sessionId: string };
+    Body: {
+      events: Array<{
+        type: EventType;
+        payload: Record<string, unknown>;
+        correlationId?: string;
+        causedBy?: string;
+        snapshotRef?: string;
+      }>;
+    };
+  }>('/api/sessions/:sessionId/events/bulk', async (req, reply) => {
+    const { sessionId } = req.params;
+    const events = Array.isArray(req.body?.events) ? req.body.events : [];
+    if (events.length === 0) {
+      reply.code(400);
+      return { error: 'events must be a non-empty array' };
+    }
+
+    const appended = eventStore.appendMany(
+      sessionId,
+      events.map((event) => ({
+        type: event.type,
+        payload: event.payload,
+        correlationId: event.correlationId,
+        causedBy: event.causedBy,
+        snapshotRef: event.snapshotRef,
+      })),
+    );
+    return { events: appended };
   });
 
   // ─── Integrity verification ───

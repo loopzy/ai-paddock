@@ -63,6 +63,10 @@ describe('SessionManager', () => {
   const originalOpenAIKey = process.env.OPENAI_API_KEY;
   const originalOpenRouterKey = process.env.OPENROUTER_API_KEY;
   const originalDeploymentMode = process.env.PADDOCK_OPENCLAW_DEPLOYMENT_MODE;
+  const originalBehaviorEnabled = process.env.PADDOCK_BEHAVIOR_LLM_ENABLED;
+  const originalBehaviorProvider = process.env.PADDOCK_BEHAVIOR_LLM_PROVIDER;
+  const originalBehaviorModel = process.env.PADDOCK_BEHAVIOR_LLM_MODEL;
+  const originalBehaviorBaseUrl = process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL;
 
   beforeEach(() => {
     process.env.PADDOCK_AGENT_BOOT_DELAY_MS = '0';
@@ -95,6 +99,14 @@ describe('SessionManager', () => {
     else process.env.OPENROUTER_API_KEY = originalOpenRouterKey;
     if (originalDeploymentMode === undefined) delete process.env.PADDOCK_OPENCLAW_DEPLOYMENT_MODE;
     else process.env.PADDOCK_OPENCLAW_DEPLOYMENT_MODE = originalDeploymentMode;
+    if (originalBehaviorEnabled === undefined) delete process.env.PADDOCK_BEHAVIOR_LLM_ENABLED;
+    else process.env.PADDOCK_BEHAVIOR_LLM_ENABLED = originalBehaviorEnabled;
+    if (originalBehaviorProvider === undefined) delete process.env.PADDOCK_BEHAVIOR_LLM_PROVIDER;
+    else process.env.PADDOCK_BEHAVIOR_LLM_PROVIDER = originalBehaviorProvider;
+    if (originalBehaviorModel === undefined) delete process.env.PADDOCK_BEHAVIOR_LLM_MODEL;
+    else process.env.PADDOCK_BEHAVIOR_LLM_MODEL = originalBehaviorModel;
+    if (originalBehaviorBaseUrl === undefined) delete process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL;
+    else process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL = originalBehaviorBaseUrl;
     eventStore.close();
   });
 
@@ -194,6 +206,35 @@ describe('SessionManager', () => {
 
       expect(execCommands.some(command => command.includes('/api/health'))).toBe(true);
       expect(execCommands.some(command => command.includes('http://127.0.0.1:8801/amp/health'))).toBe(true);
+    });
+
+    it('should pass through behavior review env and rewrite host ollama URLs for the VM', async () => {
+      process.env.PADDOCK_BEHAVIOR_LLM_ENABLED = '1';
+      process.env.PADDOCK_BEHAVIOR_LLM_PROVIDER = 'ollama';
+      process.env.PADDOCK_BEHAVIOR_LLM_MODEL = 'qwen3:0.6b';
+      process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL = 'http://127.0.0.1:11434';
+
+      const session = await manager.create('openclaw');
+      await manager.start(session.id);
+
+      const sidecarStartCall = driver.calls.find(
+        (call) => call.method === 'exec' && String(call.args[1]).includes('nohup node index.js'),
+      );
+      expect(sidecarStartCall).toBeTruthy();
+      expect(String(sidecarStartCall?.args[1])).toContain('PADDOCK_BEHAVIOR_LLM_ENABLED=1');
+      expect(String(sidecarStartCall?.args[1])).toContain(`PADDOCK_BEHAVIOR_LLM_PROVIDER='ollama'`);
+      expect(String(sidecarStartCall?.args[1])).toContain(`PADDOCK_BEHAVIOR_LLM_MODEL='qwen3:0.6b'`);
+      expect(String(sidecarStartCall?.args[1])).toContain(`PADDOCK_BEHAVIOR_LLM_BASE_URL='http://host.internal:3100/api/behavior-llm/ollama'`);
+
+      const events = eventStore.getEvents(session.id);
+      expect(
+        events.some(
+          (event) =>
+            event.type === 'amp.session.start' &&
+            (event.payload as any).phase === 'sidecar.behavior_review' &&
+            String((event.payload as any).message).includes('qwen3:0.6b'),
+        ),
+      ).toBe(true);
     });
 
     it('should write provider-aware agent env defaults into the VM', async () => {

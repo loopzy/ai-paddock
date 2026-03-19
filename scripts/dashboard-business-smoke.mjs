@@ -186,10 +186,11 @@ async function main() {
         const sawEnv = probeFsChanges.some((event) => event.payload.path.endsWith('/env.txt'));
         const toolResults = events.filter((event) => event.type === 'amp.tool.result');
         const llmResponses = events.filter((event) => event.type === 'llm.response' || event.type === 'amp.llm.response');
+        const agentMessage = events.find((event) => event.type === 'amp.agent.message');
         console.log(
-          `[smoke] waiting for command completion sawReport=${sawReport} sawEnv=${sawEnv} toolResults=${toolResults.length} llmResponses=${llmResponses.length} recent=${JSON.stringify(summarizeRecentEvents(events))}`,
+          `[smoke] waiting for command completion sawReport=${sawReport} sawEnv=${sawEnv} toolResults=${toolResults.length} llmResponses=${llmResponses.length} agentMessage=${Boolean(agentMessage)} recent=${JSON.stringify(summarizeRecentEvents(events))}`,
         );
-        if ((sawReport && sawEnv) || toolResults.length >= 3 || llmResponses.length >= 1) {
+        if ((sawReport && sawEnv) || agentMessage) {
           return { status: 'ok', events };
         }
         return null;
@@ -213,6 +214,11 @@ async function main() {
       terminalStatus: postCommandEvents.status,
       fatal: postCommandEvents.fatal?.payload ?? null,
       eventCounts: summarizeEvents(finalEvents),
+      gateVerdicts: finalEvents
+        .filter((event) => event.type === 'amp.gate.verdict')
+        .map((event) => event.payload),
+      finalAgentMessage:
+        [...finalEvents].reverse().find((event) => event.type === 'amp.agent.message')?.payload ?? null,
       lastEvents: finalEvents.slice(-20).map((event) => ({
         type: event.type,
         payload: event.payload,

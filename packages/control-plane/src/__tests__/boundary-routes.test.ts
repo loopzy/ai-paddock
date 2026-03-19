@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventStore } from '../events/event-store.js';
 import { SessionManager } from '../session/session-manager.js';
 import { SnapshotManager } from '../snapshot/snapshot-manager.js';
@@ -184,6 +184,41 @@ describe('Control-plane boundary routes', () => {
     }
   });
 
+  it('relays local ollama behavior-review requests through the control plane', async () => {
+    const originalFetch = global.fetch;
+    process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL = 'http://127.0.0.1:11434';
+    global.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe('http://127.0.0.1:11434/api/chat');
+      expect(init?.method).toBe('POST');
+      return new Response(JSON.stringify({ message: { content: '{"riskBoost":0,"triggered":[],"reason":"ok","confidence":0.9}' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const ctx = await createContext();
+
+    try {
+      const response = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/behavior-llm/ollama/api/chat',
+        payload: {
+          model: 'qwen3:0.6b',
+          messages: [{ role: 'user', content: 'test' }],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        message: { content: '{"riskBoost":0,"triggered":[],"reason":"ok","confidence":0.9}' },
+      });
+    } finally {
+      global.fetch = originalFetch;
+      await ctx.app.close();
+      ctx.eventStore.close();
+    }
+  });
+
   it('returns session history and status through /amp/control', async () => {
     const ctx = await createContext();
 
@@ -246,6 +281,48 @@ describe('Control-plane boundary routes', () => {
       const correlated = ctx.eventStore.getCorrelatedEvents('corr-snapshot-1');
       expect(correlated).toHaveLength(1);
       expect(correlated[0]?.snapshotRef).toBe('snap-checkpoint-1');
+    } finally {
+      await ctx.app.close();
+      ctx.eventStore.close();
+    }
+  });
+
+  it('accepts bulk event writes and preserves correlation metadata', async () => {
+    const ctx = await createContext();
+
+    try {
+      const session = await createRunningSession(ctx);
+
+      const response = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/events/bulk`,
+        payload: {
+          events: [
+            {
+              type: 'amp.session.start',
+              payload: { phase: 'bootstrap', message: 'Bootstrapping OpenClaw' },
+            },
+            {
+              type: 'amp.tool.result',
+              payload: { toolName: 'write', result: { ok: true } },
+              correlationId: 'corr-bulk-1',
+              snapshotRef: 'snap-bulk-1',
+            },
+          ],
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.events).toHaveLength(2);
+      expect(body.events[1]).toMatchObject({
+        correlationId: 'corr-bulk-1',
+        snapshotRef: 'snap-bulk-1',
+      });
+
+      const correlated = ctx.eventStore.getCorrelatedEvents('corr-bulk-1');
+      expect(correlated).toHaveLength(1);
+      expect(correlated[0]?.snapshotRef).toBe('snap-bulk-1');
     } finally {
       await ctx.app.close();
       ctx.eventStore.close();
