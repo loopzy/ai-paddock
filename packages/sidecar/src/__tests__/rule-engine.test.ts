@@ -1,3 +1,6 @@
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, it, expect } from 'vitest';
 import { RuleEngine, validatePath, validateUrl } from '../security/rule-engine.js';
 
@@ -87,6 +90,21 @@ describe('RuleEngine', () => {
       const result = engine.evaluate('read', { file_path: '/workspace/src/index.ts' });
       expect(result.baseRisk).toBe(0);
     });
+
+    it('should allow reads from the bundled OpenClaw runtime directory', () => {
+      const result = engine.evaluate('read', { path: '/opt/paddock/openclaw-runtime/skills/weather/SKILL.md' });
+      expect(result.baseRisk).toBe(0);
+      expect(result.triggered).toEqual([]);
+    });
+
+    it('should keep the bundled OpenClaw runtime directory read-only', () => {
+      const result = engine.evaluate('write', {
+        path: '/opt/paddock/openclaw-runtime/skills/weather/SKILL.md',
+        content: 'mutate runtime',
+      });
+      expect(result.triggered).toContain('readonly_runtime');
+      expect(result.baseRisk).toBeGreaterThanOrEqual(85);
+    });
   });
 
   describe('evaluate web_fetch (URL)', () => {
@@ -138,6 +156,33 @@ describe('validatePath', () => {
   it('should accept workspace-relative paths', () => {
     const result = validatePath('src/index.ts', '/workspace');
     expect(result.safe).toBe(true);
+  });
+
+  it('should treat direct absolute paths outside the workspace as outside_workspace instead of symlink escape', () => {
+    const result = validatePath('/tmp/something', '/workspace');
+    expect(result.rules).toContain('outside_workspace');
+    expect(result.rules).not.toContain('symlink_escape');
+  });
+
+  it('should detect real symlink escape from inside the workspace', () => {
+    const root = mkdtempSync(join(tmpdir(), 'paddock-rule-'));
+    const workspace = join(root, 'workspace');
+    const outside = join(root, 'outside');
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, 'secret.txt'), 'shh');
+    symlinkSync(join(outside, 'secret.txt'), join(workspace, 'linked-secret.txt'));
+
+    const result = validatePath('linked-secret.txt', workspace);
+    expect(result.rules).toContain('symlink_escape');
+  });
+
+  it('should allow read-only access to trusted runtime roots', () => {
+    const result = validatePath('/opt/paddock/openclaw-runtime/skills/weather/SKILL.md', '/workspace', {
+      mode: 'read',
+    });
+    expect(result.safe).toBe(true);
+    expect(result.rules).toEqual([]);
   });
 });
 

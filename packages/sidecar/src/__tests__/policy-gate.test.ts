@@ -20,6 +20,18 @@ describe('PolicyGate', () => {
       expect(verdict.riskScore).toBeLessThanOrEqual(30);
     });
 
+    it('should approve read-only inspection of the bundled OpenClaw runtime', async () => {
+      const verdict = await gate.evaluate({
+        correlationId: 'c1-runtime',
+        toolName: 'read',
+        toolInput: { path: '/opt/paddock/openclaw-runtime/skills/weather/SKILL.md' },
+      });
+
+      expect(verdict.verdict).toBe('approve');
+      expect(verdict.riskScore).toBeLessThanOrEqual(30);
+      expect(verdict.triggeredRules).toEqual([]);
+    });
+
     it('should escalate reverse shell attempts to HITL instead of auto-rejecting them', async () => {
       const verdict = await gate.evaluate({
         correlationId: 'c2',
@@ -88,6 +100,21 @@ describe('PolicyGate', () => {
 
       expect(verdict.verdict).toBe('ask');
       expect(verdict.riskScore).toBeGreaterThan(70);
+    });
+
+    it('should require approval before mutating the bundled OpenClaw runtime', async () => {
+      const verdict = await gate.evaluate({
+        correlationId: 'c8',
+        toolName: 'write',
+        toolInput: {
+          path: '/opt/paddock/openclaw-runtime/skills/weather/SKILL.md',
+          content: 'rewrite runtime',
+        },
+      });
+
+      expect(verdict.verdict).toBe('ask');
+      expect(verdict.triggeredRules).toContain('readonly_runtime');
+      expect(verdict.riskScore).toBeGreaterThanOrEqual(70);
     });
   });
 

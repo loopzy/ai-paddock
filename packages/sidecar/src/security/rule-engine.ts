@@ -44,42 +44,75 @@ const PATH_RULES: Rule[] = [
   { pattern: /^\/(?!workspace)/, risk: 40, name: 'outside_workspace' },
 ];
 
+const TRUSTED_RUNTIME_READ_ROOTS = [
+  '/opt/paddock/openclaw-runtime',
+  '/opt/paddock/amp-openclaw',
+];
+
+function isPathInside(root: string, target: string): boolean {
+  const rel = relative(root, target);
+  return rel === '' || (!rel.startsWith('..') && !rel.startsWith('../'));
+}
+
+function isReadOnlyTrustedRuntimePath(path: string): boolean {
+  return TRUSTED_RUNTIME_READ_ROOTS.some((root) => isPathInside(root, path));
+}
+
 // Safe environment variables whitelist
 export const SAFE_ENV_VARS = ['PATH', 'HOME', 'TMPDIR', 'LANG', 'TERM'];
 
 /**
  * Validate a file path is safe (no traversal, no symlink escape).
  */
-export function validatePath(rawPath: string, workspace: string): { safe: boolean; risk: number; rules: string[] } {
+export function validatePath(
+  rawPath: string,
+  workspace: string,
+  options?: { mode?: 'read' | 'write' | 'edit' },
+): { safe: boolean; risk: number; rules: string[] } {
   const triggered: string[] = [];
   let risk = 0;
+  const mode = options?.mode ?? 'read';
 
   // Phase 1: reject ".." path components
   if (rawPath.includes('..')) {
     return { safe: false, risk: 95, rules: ['path_traversal'] };
   }
 
+  const requestedPath = resolve(workspace, rawPath);
+  const requestedInsideWorkspace = isPathInside(workspace, requestedPath);
+
   // Phase 2: resolve symlinks to get real path
   let realPath: string;
   try {
-    realPath = realpathSync(resolve(workspace, rawPath));
+    realPath = realpathSync(requestedPath);
   } catch {
-    realPath = resolve(workspace, rawPath);
+    realPath = requestedPath;
   }
 
-  // Phase 3: confirm real path is within workspace (or allowed list)
-  const rel = relative(workspace, realPath);
-  if (rel.startsWith('..') || resolve(realPath) !== resolve(workspace, rel)) {
+  const realInsideWorkspace = isPathInside(workspace, realPath);
+  const trustedRuntimeRead = mode === 'read' && isReadOnlyTrustedRuntimePath(realPath);
+
+  // Phase 3: flag true workspace symlink escape only if the user targeted a workspace path
+  // but the resolved path lands outside the workspace and outside trusted runtime roots.
+  if (requestedInsideWorkspace && !realInsideWorkspace && !trustedRuntimeRead) {
     triggered.push('symlink_escape');
     risk = Math.max(risk, 90);
   }
 
   // Check path rules
   for (const rule of PATH_RULES) {
+    if (rule.name === 'outside_workspace' && (realInsideWorkspace || trustedRuntimeRead)) {
+      continue;
+    }
     if (rule.pattern.test(rawPath) || rule.pattern.test(realPath)) {
       triggered.push(rule.name);
       risk = Math.max(risk, rule.risk);
     }
+  }
+
+  if (mode !== 'read' && isReadOnlyTrustedRuntimePath(realPath)) {
+    triggered.push('readonly_runtime');
+    risk = Math.max(risk, 85);
   }
 
   return { safe: triggered.length === 0, risk, rules: triggered };
@@ -149,7 +182,10 @@ export class RuleEngine {
   evaluate(toolName: string, toolInput: Record<string, unknown>): RuleResult {
     switch (toolName) {
       case 'exec': return this.evaluateExec(toolInput);
-      case 'read': case 'write': case 'edit': return this.evaluatePath(toolInput);
+      case 'read': return this.evaluatePath('read', toolInput);
+      case 'write':
+      case 'edit':
+        return this.evaluatePath(toolName, toolInput);
       case 'web_fetch': return this.evaluateUrl(toolInput);
       case 'web_search': return this.evaluateWebSearch(toolInput);
       case 'browser': return this.evaluateBrowser(toolInput);
@@ -189,10 +225,12 @@ export class RuleEngine {
     return { baseRisk: risk, triggered };
   }
 
-  private evaluatePath(input: Record<string, unknown>): RuleResult {
+  private evaluatePath(toolName: 'read' | 'write' | 'edit', input: Record<string, unknown>): RuleResult {
     const path = String(input.path ?? input.file_path ?? '');
     if (!path) return { baseRisk: 0, triggered: [] };
-    const result = validatePath(path, this.workspace);
+    const result = validatePath(path, this.workspace, {
+      mode: toolName === 'read' ? 'read' : toolName,
+    });
     return { baseRisk: result.risk, triggered: result.rules };
   }
 
