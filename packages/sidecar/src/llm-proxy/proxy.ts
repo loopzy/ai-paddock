@@ -163,8 +163,12 @@ export class LLMProxy {
 
     if (secretsFound > 0) {
       await this.reporter.report('llm.request', {
-        provider, model: extractModel(maskedBody), messageCount: extractMessageCount(maskedBody),
-        toolCount: extractToolCount(maskedBody), vault: { secretsMasked: secretsFound, categories },
+        provider,
+        model: extractModel(maskedBody),
+        messageCount: extractMessageCount(maskedBody),
+        toolCount: extractToolCount(maskedBody),
+        messagesPreview: extractMessagesPreview(maskedBody),
+        vault: { secretsMasked: secretsFound, categories },
       });
     } else {
       await this.reportLLMRequest(provider, maskedBody);
@@ -243,7 +247,11 @@ export class LLMProxy {
     try {
       const parsed = JSON.parse(body);
       await this.reporter.report('llm.request', {
-        provider, model: parsed.model ?? 'unknown', messageCount: parsed.messages?.length ?? 0, toolCount: parsed.tools?.length ?? 0,
+        provider,
+        model: parsed.model ?? 'unknown',
+        messageCount: parsed.messages?.length ?? 0,
+        toolCount: parsed.tools?.length ?? 0,
+        messagesPreview: extractMessagesPreview(body),
       });
     } catch { /* skip */ }
   }
@@ -260,6 +268,7 @@ export class LLMProxy {
       durationMs,
       streamed: summary.streamed,
       chunkCount: summary.chunkCount,
+      responsePreview: extractResponsePreview(summary.content),
     });
 
     if (!summary.streamed && summary.content.length > 0) {
@@ -456,4 +465,77 @@ function extractMessageCount(body: string): number {
 }
 function extractToolCount(body: string): number {
   try { return JSON.parse(body).tools?.length ?? 0; } catch { return 0; }
+}
+
+function truncatePreview(value: string, maxChars = 280): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}...`;
+}
+
+function extractTextPreview(content: unknown): string {
+  if (typeof content === 'string') {
+    return truncatePreview(content.trim());
+  }
+  if (Array.isArray(content)) {
+    const text = content
+      .map((item) => {
+        if (!item || typeof item !== 'object') return '';
+        const block = item as Record<string, unknown>;
+        if (block.type === 'text' && typeof block.text === 'string') {
+          return block.text;
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+    return text ? truncatePreview(text) : '';
+  }
+  if (content && typeof content === 'object') {
+    const record = content as Record<string, unknown>;
+    if (typeof record.text === 'string') {
+      return truncatePreview(record.text.trim());
+    }
+  }
+  return '';
+}
+
+function extractMessagesPreview(body: string): Array<{ role: string; text: string }> {
+  try {
+    const parsed = JSON.parse(body) as { messages?: Array<{ role?: unknown; content?: unknown }> };
+    const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+    return messages
+      .slice(-3)
+      .map((message) => {
+        const role = typeof message.role === 'string' ? message.role : 'unknown';
+        const text = extractTextPreview(message.content);
+        return text ? { role, text } : null;
+      })
+      .filter((value): value is { role: string; text: string } => Boolean(value));
+  } catch {
+    return [];
+  }
+}
+
+function extractResponsePreview(content: unknown[]): string {
+  const parts = content
+    .map((block) => {
+      if (!block || typeof block !== 'object') return '';
+      const record = block as Record<string, unknown>;
+      if (record.type === 'text' && typeof record.text === 'string') {
+        return record.text;
+      }
+      if (record.type === 'tool_use' && typeof record.name === 'string') {
+        return `[tool] ${record.name}`;
+      }
+      if (record.type === 'function' && record.function && typeof record.function === 'object') {
+        const fn = record.function as Record<string, unknown>;
+        return typeof fn.name === 'string' ? `[tool] ${fn.name}` : '';
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+  return parts ? truncatePreview(parts, 400) : '';
 }

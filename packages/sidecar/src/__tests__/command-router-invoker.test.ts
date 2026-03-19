@@ -64,4 +64,37 @@ describe('createOpenClawGatewayInvoker', () => {
     expect(sendOptions.env.OPENCLAW_CONFIG_PATH).toBe('/workspace/.openclaw/openclaw.json');
     expect(sendOptions.env.OPENCLAW_GATEWAY_PORT).toBe('18789');
   });
+
+  it('uses chat.abort and forwards the requested run id when aborting a command', async () => {
+    execFileMock.mockImplementationOnce((
+      _file: string,
+      args: string[],
+      _options: Record<string, unknown>,
+      callback: (error: Error | null, result?: { stdout: string; stderr: string }) => void,
+    ) => {
+      expect(args).toContain('chat.abort');
+      callback(null, {
+        stdout: JSON.stringify({ ok: true, aborted: true }),
+        stderr: '',
+      });
+    });
+
+    const { createOpenClawGatewayAborter } = await import('../command-router.js');
+    const abort = createOpenClawGatewayAborter();
+
+    const result = await abort({
+      sessionKey: 'paddock:test-session',
+      runId: 'run-1',
+    });
+
+    expect(result).toEqual({ aborted: true });
+
+    const [, abortArgs] = execFileMock.mock.calls[0] as [string, string[]];
+    const abortParamsIndex = abortArgs.indexOf('--params');
+    const abortPayload = JSON.parse(abortArgs[abortParamsIndex + 1] ?? '{}');
+    expect(abortPayload).toEqual({
+      sessionKey: 'paddock:test-session',
+      runId: 'run-1',
+    });
+  });
 });

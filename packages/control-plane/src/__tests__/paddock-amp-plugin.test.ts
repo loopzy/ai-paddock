@@ -250,4 +250,129 @@ describe('paddock-amp-plugin', () => {
       }),
     ]);
   });
+
+  it('captures final assistant replies from before_message_write and deduplicates repeated hook emissions', async () => {
+    const plugin = await loadPlugin();
+    const api = createApi();
+    plugin.register(api);
+
+    const beforeMessageWrite = handlers.get('before_message_write');
+    const messageSent = handlers.get('message_sent');
+
+    expect(beforeMessageWrite).toBeTypeOf('function');
+    expect(messageSent).toBeTypeOf('function');
+
+    beforeMessageWrite?.(
+      {
+        message: { role: 'assistant', content: [{ type: 'text', text: '上海明天多云，18 到 24 度。' }] },
+        sessionKey: 'paddock:test',
+        agentId: 'main',
+      },
+      { sessionKey: 'paddock:test', agentId: 'main', runId: 'run-weather' },
+    );
+
+    await messageSent?.(
+      {
+        success: true,
+        message: { role: 'assistant', content: [{ type: 'text', text: '上海明天多云，18 到 24 度。' }] },
+      },
+      { sessionKey: 'paddock:test', agentId: 'main', runId: 'run-weather' },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const agentMessages = fetchMock.mock.calls
+      .filter(([url]) => String(url).includes('/amp/event'))
+      .map(([, init]) => JSON.parse(String((init as RequestInit | undefined)?.body ?? '{}')) as {
+        toolName: string;
+        result: string;
+      })
+      .filter((entry) => entry.toolName === 'amp.agent.message')
+      .map((entry) => JSON.parse(entry.result) as Record<string, unknown>);
+
+    expect(agentMessages).toEqual([
+      expect.objectContaining({
+        text: '上海明天多云，18 到 24 度。',
+        runId: 'run-weather',
+        agentId: 'main',
+        sessionKey: 'paddock:test',
+      }),
+    ]);
+  });
+
+  it('captures the final assistant reply from agent_end when message hooks have no runId', async () => {
+    const plugin = await loadPlugin();
+    const api = createApi();
+    plugin.register(api);
+
+    const beforeMessageWrite = handlers.get('before_message_write');
+    const messageSent = handlers.get('message_sent');
+    const agentEnd = handlers.get('agent_end');
+
+    expect(beforeMessageWrite).toBeTypeOf('function');
+    expect(messageSent).toBeTypeOf('function');
+    expect(agentEnd).toBeTypeOf('function');
+
+    beforeMessageWrite?.(
+      {
+        message: { role: 'assistant', content: [{ type: 'text', text: '北京今天晴，最高 12 度。' }] },
+        sessionKey: 'paddock:test',
+        agentId: 'main',
+      },
+      { sessionKey: 'paddock:test', agentId: 'main' },
+    );
+
+    await messageSent?.(
+      {
+        success: true,
+        message: { role: 'assistant', content: [{ type: 'text', text: '北京今天晴，最高 12 度。' }] },
+      },
+      { sessionKey: 'paddock:test', agentId: 'main' },
+    );
+
+    await agentEnd?.(
+      {
+        success: true,
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: '今天天气怎么样' }] },
+          { role: 'assistant', content: [{ type: 'text', text: '北京今天晴，最高 12 度。' }] },
+        ],
+      },
+      { sessionKey: 'paddock:test', agentId: 'main', runId: 'run-weather-final' },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const ampEventCalls = fetchMock.mock.calls
+      .filter(([url]) => String(url).includes('/amp/event'))
+      .map(([, init]) => JSON.parse(String((init as RequestInit | undefined)?.body ?? '{}')) as {
+        toolName: string;
+        result: string;
+      });
+
+    const agentMessages = ampEventCalls
+      .filter((entry) => entry.toolName === 'amp.agent.message')
+      .map((entry) => JSON.parse(entry.result) as Record<string, unknown>);
+    const traceCalls = ampEventCalls
+      .filter((entry) => entry.toolName === 'amp.trace')
+      .map((entry) => JSON.parse(entry.result) as Record<string, unknown>);
+
+    expect(agentMessages).toEqual([
+      expect.objectContaining({
+        text: '北京今天晴，最高 12 度。',
+        runId: 'run-weather-final',
+        agentId: 'main',
+        sessionKey: 'paddock:test',
+      }),
+    ]);
+    expect(traceCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: 'openclaw.agent_end',
+          runId: 'run-weather-final',
+          success: true,
+        }),
+      ]),
+    );
+  });
 });

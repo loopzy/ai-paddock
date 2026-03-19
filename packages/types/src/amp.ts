@@ -15,6 +15,7 @@ export type AMPEventType =
   | 'amp.snapshot.created' | 'amp.snapshot.restored'
   | 'amp.hitl.request' | 'amp.hitl.decision'
   | 'amp.user.command'
+  | 'amp.command.status'
   // Security engine
   | 'amp.gate.verdict'
   // Agent Lifecycle layer

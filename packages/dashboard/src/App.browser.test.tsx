@@ -12,7 +12,7 @@ vi.mock('./components/HITLModal.js', () => ({
 }));
 
 vi.mock('./components/VMPanel.js', () => ({
-  VMPanel: () => null,
+  VMPanel: ({ sessionId }: { sessionId: string }) => <div>VM Panel {sessionId}</div>,
 }));
 
 type MockResponseBody = Record<string, unknown> | Array<unknown>;
@@ -73,7 +73,29 @@ describe('App browser journey', () => {
       const method = init?.method ?? 'GET';
 
       if (url === '/api/sessions' && method === 'GET') {
-        return jsonResponse([]);
+        return jsonResponse([
+          {
+            id: 'sess-1',
+            status: 'running',
+            agentType: 'openclaw',
+            sandboxType: 'computer-box',
+            createdAt: 2,
+          },
+          {
+            id: 'sess-2',
+            status: 'running',
+            agentType: 'none',
+            sandboxType: 'simple-box',
+            createdAt: 1,
+          },
+          {
+            id: 'sess-3',
+            status: 'terminated',
+            agentType: 'openclaw',
+            sandboxType: 'simple-box',
+            createdAt: 0,
+          },
+        ]);
       }
       if (url === '/api/health' && method === 'GET') {
         return jsonResponse({
@@ -84,21 +106,6 @@ describe('App browser journey', () => {
           },
           llmCatalog: {
             providers: [
-              {
-                id: 'anthropic',
-                label: 'Anthropic',
-                description: 'Direct Anthropic Messages API.',
-                envKeys: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
-                defaultModel: 'claude-3-5-haiku-latest',
-                configured: false,
-                models: [
-                  {
-                    id: 'claude-3-5-haiku-latest',
-                    label: 'Claude 3.5 Haiku',
-                    description: 'Fast Anthropic preset.',
-                  },
-                ],
-              },
               {
                 id: 'openrouter',
                 label: 'OpenRouter',
@@ -112,11 +119,6 @@ describe('App browser journey', () => {
                     label: 'Kimi K2',
                     description: 'Large-context preset.',
                   },
-                  {
-                    id: 'deepseek/deepseek-chat',
-                    label: 'DeepSeek Chat',
-                    description: 'Alternate preset.',
-                  },
                 ],
               },
             ],
@@ -125,21 +127,31 @@ describe('App browser journey', () => {
       }
       if (url === '/api/sessions' && method === 'POST') {
         return jsonResponse({
-          id: 'sess-1',
+          id: 'sess-new',
           status: 'created',
           agentType: 'none',
           sandboxType: 'simple-box',
-          createdAt: 1,
+          createdAt: 3,
         });
       }
-      if (url === '/api/sessions/sess-1/events' && method === 'GET') {
+      if ((url === '/api/sessions/sess-1/events' || url === '/api/sessions/sess-2/events' || url === '/api/sessions/sess-3/events' || url === '/api/sessions/sess-new/events') && method === 'GET') {
+        return jsonResponse([]);
+      }
+      if ((url === '/api/sessions/sess-1/hitl/pending' || url === '/api/sessions/sess-2/hitl/pending' || url === '/api/sessions/sess-3/hitl/pending' || url === '/api/sessions/sess-new/hitl/pending') && method === 'GET') {
         return jsonResponse([]);
       }
       if (url === '/api/sessions/sess-1/deploy-agent' && method === 'POST') {
-        expect(init?.body).toBe(JSON.stringify({
-          agentType: 'openclaw',
-        }));
         return jsonResponse({ deploying: true, agentType: 'openclaw' });
+      }
+      if (url === '/api/sessions/sess-1/commands/abort' && method === 'POST') {
+        expect(init?.body).toBe(JSON.stringify({ runId: 'run-2' }));
+        return jsonResponse({ ok: true, aborted: true, runId: 'run-2' });
+      }
+      if (url === '/api/sessions/sess-1/kill' && method === 'POST') {
+        return jsonResponse({ killed: true });
+      }
+      if (url === '/api/sessions/sess-3' && method === 'DELETE') {
+        return jsonResponse({ deleted: true });
       }
 
       throw new Error(`Unexpected fetch: ${method} ${url}`);
@@ -158,14 +170,60 @@ describe('App browser journey', () => {
     cleanup();
   });
 
-  it('lets the user create a sandbox, waits for readiness, sends commands, and disables input again after a fatal error', async () => {
+  it('keeps sandbox creation and session switching available even after entering a session', async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(await screen.findByRole('button', { name: 'Create Sandbox' }));
+    expect(await screen.findByText('Create Sandbox')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /sess-1/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /sess-2/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /sess-1/i }));
 
     await waitFor(() => {
+      expect(MockWebSocket.instances).toHaveLength(1);
+      expect(screen.getAllByText('sess-1').length).toBeGreaterThan(0);
+    });
+
+    expect(screen.getByText('Create Sandbox')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /sess-2/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /sess-2/i }));
+
+    await waitFor(() => {
+      expect(MockWebSocket.instances).toHaveLength(2);
+      expect(screen.getAllByText('sess-2').length).toBeGreaterThan(0);
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Create Sandbox' }));
+    await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/sessions', expect.objectContaining({ method: 'POST' }));
+    });
+  });
+
+  it('supports collapsing the sidebar and deleting archived sessions', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole('button', { name: /Collapse sidebar/i }));
+    expect(screen.getByRole('button', { name: /Expand sidebar/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Expand sidebar/i }));
+    await user.click(screen.getByRole('button', { name: /Archived sessions/i }));
+    await user.click(screen.getByRole('button', { name: /Delete sess-3/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/sessions/sess-3', expect.objectContaining({ method: 'DELETE' }));
+    });
+  });
+
+  it('renders a command-first monitor, preserves a raw logs tab, and lets the user stop a running command', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole('button', { name: /sess-1/i }));
+
+    await waitFor(() => {
       expect(MockWebSocket.instances).toHaveLength(1);
     });
 
@@ -182,15 +240,6 @@ describe('App browser journey', () => {
       });
     });
 
-    expect(await screen.findByText('No agent running.')).toBeInTheDocument();
-    expect(
-      screen.getByText(/Will use: openrouter \/ moonshotai\/kimi-k2\./),
-    ).toBeInTheDocument();
-
-    const inputBeforeReady = await screen.findByRole('textbox');
-    expect(inputBeforeReady).toBeDisabled();
-    expect(screen.getByText('Wait for the agent to report AMP readiness before sending commands.')).toBeInTheDocument();
-
     await user.click(screen.getByRole('button', { name: 'Deploy Agent' }));
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/sessions/sess-1/deploy-agent', expect.objectContaining({ method: 'POST' }));
@@ -205,57 +254,99 @@ describe('App browser journey', () => {
         type: 'amp.agent.ready',
         payload: { agent: 'openclaw', version: 'test', capabilities: ['chat'] },
       });
+    });
+
+    await act(async () => {
       socket.emit({
         id: 'evt-3',
         sessionId: 'sess-1',
         seq: 3,
         timestamp: Date.now(),
-        type: 'amp.session.start',
-        payload: { phase: 'agent_ready', message: 'OpenClaw connected to Paddock' },
+        type: 'user.command',
+        payload: { command: '先帮我看看虎扑首页' },
       });
-    });
-
-    await waitFor(() => expect(screen.getByRole('textbox')).toBeEnabled());
-
-    await user.type(screen.getByRole('textbox'), 'hello');
-    await user.click(screen.getByRole('button', { name: 'Send' }));
-
-    expect(socket.sent).toContain(JSON.stringify({ type: 'user.command', command: 'hello' }));
-
-    await act(async () => {
       socket.emit({
         id: 'evt-4',
         sessionId: 'sess-1',
         seq: 4,
         timestamp: Date.now(),
-        type: 'amp.agent.error',
-        payload: {
-          category: 'auth',
-          code: 'ERR_NO_API_KEY',
-          message: 'API key not configured.',
-          recoverable: false,
-        },
+        type: 'amp.user.command',
+        payload: { command: '先帮我看看虎扑首页', runId: 'run-1' },
       });
       socket.emit({
         id: 'evt-5',
         sessionId: 'sess-1',
         seq: 5,
         timestamp: Date.now(),
-        type: 'amp.agent.fatal',
+        type: 'llm.request',
         payload: {
-          category: 'auth',
-          code: 'ERR_NO_API_KEY',
-          message: 'API key not configured.',
-          recoverable: false,
+          provider: 'openrouter',
+          model: 'moonshotai/kimi-k2',
+          messagesPreview: [{ role: 'user', text: '先帮我看看虎扑首页' }],
         },
+      });
+      socket.emit({
+        id: 'evt-6',
+        sessionId: 'sess-1',
+        seq: 6,
+        timestamp: Date.now(),
+        type: 'amp.tool.intent',
+        payload: { toolName: 'browser', toolInput: { action: 'open', url: 'https://www.hupu.com' }, runId: 'run-1' },
+      });
+      socket.emit({
+        id: 'evt-7',
+        sessionId: 'sess-1',
+        seq: 7,
+        timestamp: Date.now(),
+        type: 'amp.agent.message',
+        payload: { text: '虎扑首页已经打开。', runId: 'run-1' },
+      });
+      socket.emit({
+        id: 'evt-8',
+        sessionId: 'sess-1',
+        seq: 8,
+        timestamp: Date.now(),
+        type: 'user.command',
+        payload: { command: '这个命令还在跑' },
+      });
+      socket.emit({
+        id: 'evt-9',
+        sessionId: 'sess-1',
+        seq: 9,
+        timestamp: Date.now(),
+        type: 'amp.user.command',
+        payload: { command: '这个命令还在跑', runId: 'run-2' },
+      });
+      socket.emit({
+        id: 'evt-10',
+        sessionId: 'sess-1',
+        seq: 10,
+        timestamp: Date.now(),
+        type: 'amp.tool.intent',
+        payload: { toolName: 'exec', toolInput: { command: 'sleep 1000' }, runId: 'run-2' },
       });
     });
 
+    expect(await screen.findByText('这个命令还在跑')).toBeInTheDocument();
+    expect(screen.getByText('虎扑首页已经打开。')).toBeInTheDocument();
+    expect(screen.queryByText(/"toolName":/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'View details' }));
+    expect(await screen.findByText(/Execution tree/i)).toBeInTheDocument();
+    expect(screen.getByText(/LLM turn · openrouter \/ moonshotai\/kimi-k2/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/先帮我看看虎扑首页/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Tool · browser/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Raw Logs' }));
     await waitFor(() => {
-      expect(screen.getByRole('textbox')).toBeDisabled();
-      expect(screen.getByText('Agent disconnected.')).toBeInTheDocument();
-      expect(screen.getByText('Agent disconnected. Redeploy it or inspect the error timeline before sending commands.')).toBeInTheDocument();
-      expect(screen.getByText('ERR_NO_API_KEY')).toBeInTheDocument();
+      expect(screen.getAllByText('amp.tool.intent').length).toBeGreaterThan(0);
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Commands' }));
+    await user.click(screen.getByRole('button', { name: 'Stop command' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/sessions/sess-1/commands/abort', expect.objectContaining({ method: 'POST' }));
     });
   });
 });

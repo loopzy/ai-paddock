@@ -716,5 +716,34 @@ describe('SessionManager', () => {
     it('should throw for unknown session in getDriverForSession', () => {
       expect(() => manager.getDriverForSession('nonexistent')).toThrow('not found');
     });
+
+    it('should reconcile stale running sessions to terminated when the runtime disappears', async () => {
+      const failDriver = createMockDriver();
+      failDriver.getInfo = async () => null;
+      const mgr2 = new SessionManager(eventStore, failDriver, eventStore.db);
+      const session = await mgr2.create('openclaw');
+      await mgr2.start(session.id);
+
+      const sessions = await mgr2.listWithRuntimeStatus();
+
+      expect(sessions[0]?.status).toBe('terminated');
+      const terminatedEvent = eventStore
+        .getEvents(session.id)
+        .find((event) => event.type === 'session.status' && (event.payload as any).reason === 'runtime_unavailable');
+      expect(terminatedEvent).toBeTruthy();
+    });
+
+    it('should remove a session and its persisted history', async () => {
+      const session = await manager.create('openclaw');
+      eventStore.append(session.id, 'user.command', { command: 'cleanup me' });
+
+      const removed = await manager.remove(session.id);
+
+      expect(removed).toBe(true);
+      expect(manager.get(session.id)).toBeUndefined();
+      const row = eventStore.db.prepare('SELECT id FROM sessions WHERE id = ?').get(session.id);
+      expect(row).toBeUndefined();
+      expect(eventStore.getEvents(session.id)).toEqual([]);
+    });
   });
 });

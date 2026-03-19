@@ -171,7 +171,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps) {
     return session;
   });
 
-  app.get('/api/sessions', async () => sessionManager.list());
+  app.get('/api/sessions', async () => sessionManager.listWithRuntimeStatus());
 
   app.get<{ Params: { sessionId: string } }>('/api/sessions/:sessionId', async (req) => {
     return sessionManager.get(req.params.sessionId) ?? { error: 'Session not found' };
@@ -185,6 +185,15 @@ export function registerRoutes(app: FastifyInstance, deps: Deps) {
   app.post<{ Params: { sessionId: string } }>('/api/sessions/:sessionId/stop', async (req) => {
     await sessionManager.stop(req.params.sessionId);
     return { stopped: true };
+  });
+
+  app.delete<{ Params: { sessionId: string } }>('/api/sessions/:sessionId', async (req, reply) => {
+    const removed = await sessionManager.remove(req.params.sessionId);
+    if (!removed) {
+      reply.code(404);
+      return { error: 'Session not found' };
+    }
+    return { deleted: true };
   });
 
   app.post<{ Params: { sessionId: string }; Body: { agentType: string; llmProvider?: string; llmModel?: string } }>('/api/sessions/:sessionId/deploy-agent', async (req) => {
@@ -296,6 +305,36 @@ export function registerRoutes(app: FastifyInstance, deps: Deps) {
   app.post<{ Params: { sessionId: string } }>('/api/sessions/:sessionId/kill', async (req) => {
     await sessionManager.stop(req.params.sessionId);
     return { killed: true };
+  });
+
+  app.post<{ Params: { sessionId: string }; Body: { runId?: string } }>('/api/sessions/:sessionId/commands/abort', async (req, reply) => {
+    const { sessionId } = req.params;
+    const session = sessionManager.get(sessionId);
+    if (!session) {
+      reply.code(404);
+      return { error: 'Session not found' };
+    }
+    if (!session.vmId) {
+      reply.code(409);
+      return { error: 'Session has no running VM' };
+    }
+    if (session.agentTransport !== 'openclaw-gateway' || !session.agentSessionKey) {
+      reply.code(409);
+      return { error: 'The current agent transport does not support command abort' };
+    }
+
+    const result = await abortCommandInVM(sessionId, req.body.runId);
+    eventStore.append(sessionId, 'amp.command.status' as EventType, {
+      status: result.aborted ? 'aborted' : 'abort-requested',
+      runId: req.body.runId,
+      sessionKey: session.agentSessionKey,
+      source: 'dashboard',
+    });
+    return {
+      ok: true,
+      aborted: result.aborted,
+      runId: req.body.runId ?? null,
+    };
   });
 
   // ─── MCP Gateway (legacy) ───
@@ -720,26 +759,56 @@ export function registerRoutes(app: FastifyInstance, deps: Deps) {
 
   // ─── Forward user commands to Sidecar inside VM ───
   async function forwardCommandToVM(sessionId: string, command: string): Promise<void> {
+    await postToSidecar(sessionId, '/amp/command', {
+      command,
+      timestamp: Date.now(),
+      transport: sessionManager.get(sessionId)?.agentTransport,
+      sessionKey: sessionManager.get(sessionId)?.agentSessionKey,
+    });
+  }
+
+  async function abortCommandInVM(sessionId: string, runId?: string): Promise<{ aborted: boolean }> {
+    const session = sessionManager.get(sessionId);
+    if (!session?.agentSessionKey) {
+      throw new Error(`Session ${sessionId} has no active agent session key`);
+    }
+
+    const result = await postToSidecar(sessionId, '/amp/command/abort', {
+      transport: session.agentTransport,
+      sessionKey: session.agentSessionKey,
+      runId,
+    });
+    return {
+      aborted: result.aborted !== false,
+    };
+  }
+
+  async function postToSidecar(sessionId: string, path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const session = sessionManager.get(sessionId);
     if (!session?.vmId) {
       throw new Error(`Session ${sessionId} has no running VM`);
     }
     const driver = sessionManager.getDriverForSession(sessionId);
-    // Use base64 encoding to safely pass arbitrary user input through the shell
-    const payload = JSON.stringify({
-      command,
-      timestamp: Date.now(),
-      transport: session.agentTransport,
-      sessionKey: session.agentSessionKey,
-    });
+    const payload = JSON.stringify(body);
     const b64 = Buffer.from(payload).toString('base64');
-    const cmd = `echo '${b64}' | base64 -d | NO_PROXY=127.0.0.1,localhost curl --noproxy "*" -fsS -X POST http://127.0.0.1:8801/amp/command -H 'Content-Type: application/json' -d @-`;
+    const cmd = `echo '${b64}' | base64 -d | NO_PROXY=127.0.0.1,localhost curl --noproxy "*" -fsS -X POST http://127.0.0.1:8801${path} -H 'Content-Type: application/json' -d @-`;
     console.log(`[forwardCommandToVM] Executing in VM ${session.vmId}: ${cmd.substring(0, 100)}...`);
     const result = await driver.exec(session.vmId, cmd);
     console.log(`[forwardCommandToVM] Result: exitCode=${result.exitCode}, stdout="${result.stdout}", stderr="${result.stderr}"`);
     if (result.exitCode !== 0) {
       const detail = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join(' | ');
       throw new Error(`Failed to forward command into VM${detail ? `: ${detail}` : ''}`);
+    }
+
+    const stdout = result.stdout.trim();
+    if (!stdout) {
+      return { ok: true };
+    }
+
+    try {
+      return JSON.parse(stdout) as Record<string, unknown>;
+    } catch (error) {
+      throw new Error(`Sidecar returned invalid JSON: ${String(error)}`);
     }
   }
 

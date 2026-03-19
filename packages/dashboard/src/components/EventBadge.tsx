@@ -23,6 +23,7 @@ const badgeConfig: Record<string, { label: string; bg: string; text: string }> =
   'amp.hitl.request': { label: 'Security', bg: 'bg-orange-900', text: 'text-orange-300' },
   'amp.hitl.decision': { label: 'Security', bg: 'bg-orange-900', text: 'text-orange-300' },
   'amp.user.command': { label: 'System', bg: 'bg-gray-800', text: 'text-gray-300' },
+  'amp.command.status': { label: 'Command', bg: 'bg-indigo-900', text: 'text-indigo-300' },
 };
 
 export function EventBadge({ type }: { type: string }) {

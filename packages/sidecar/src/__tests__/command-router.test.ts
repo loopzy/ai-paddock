@@ -35,7 +35,19 @@ describe('routeAgentCommand', () => {
     expect(existsSync(commandFile)).toBe(true);
     const content = readFileSync(commandFile, 'utf8').trim();
     expect(JSON.parse(content).command).toBe('hello sandbox');
-    expect(reporter.report).toHaveBeenCalledWith('amp.user.command', { command: 'hello sandbox' });
+    expect(reporter.report).toHaveBeenCalledWith('amp.user.command', {
+      command: 'hello sandbox',
+      transport: 'amp-command-file',
+      runId: undefined,
+      sessionKey: undefined,
+    });
+    expect(reporter.report).toHaveBeenCalledWith('amp.command.status', {
+      command: 'hello sandbox',
+      status: 'accepted',
+      transport: 'amp-command-file',
+      runId: undefined,
+      sessionKey: undefined,
+    });
   });
 
   it('routes openclaw-gateway transports to the provided invoker', async () => {
@@ -61,7 +73,19 @@ describe('routeAgentCommand', () => {
       sessionKey: 'paddock:test-session',
     });
     expect(existsSync(commandFile)).toBe(false);
-    expect(reporter.report).toHaveBeenCalledWith('amp.user.command', { command: 'hello openclaw' });
+    expect(reporter.report).toHaveBeenCalledWith('amp.user.command', {
+      command: 'hello openclaw',
+      transport: 'openclaw-gateway',
+      runId: 'paddock-run-1',
+      sessionKey: 'paddock:test-session',
+    });
+    expect(reporter.report).toHaveBeenCalledWith('amp.command.status', {
+      command: 'hello openclaw',
+      status: 'accepted',
+      transport: 'openclaw-gateway',
+      runId: 'paddock-run-1',
+      sessionKey: 'paddock:test-session',
+    });
   });
 
   it('fails clearly when openclaw-gateway transport is requested without an invoker', async () => {

@@ -793,10 +793,57 @@ export class SessionManager {
     return Array.from(this.sessions.values());
   }
 
+  async listWithRuntimeStatus(): Promise<Session[]> {
+    const sessions = Array.from(this.sessions.values());
+    for (const session of sessions) {
+      await this.reconcileRuntimeStatus(session);
+    }
+    return sessions;
+  }
+
+  async remove(sessionId: string): Promise<boolean> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+
+    if (session.vmId && session.status === 'running') {
+      try {
+        const driver = this.getDriver(session.sandboxType);
+        await driver.destroyBox(session.vmId);
+      } catch {
+        // best effort cleanup only
+      }
+    }
+
+    this.sessions.delete(sessionId);
+    this.db.prepare('DELETE FROM snapshots WHERE session_id = ?').run(sessionId);
+    this.db.prepare('DELETE FROM events WHERE session_id = ?').run(sessionId);
+    this.db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+    return true;
+  }
+
   private updateSessionStatus(session: Session, status: SessionStatus) {
     session.status = status;
     session.updatedAt = Date.now();
     this.db.prepare('UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?').run(session.status, session.updatedAt, session.id);
+  }
+
+  private async reconcileRuntimeStatus(session: RuntimeSession): Promise<void> {
+    if (!session.vmId) return;
+    if (session.status !== 'running' && session.status !== 'paused') return;
+
+    try {
+      const driver = this.getDriver(session.sandboxType);
+      const info = await driver.getInfo(session.vmId);
+      if (info?.status === 'running') return;
+    } catch {
+      // If the driver cannot see the VM anymore, surface that truth in the UI.
+    }
+
+    this.updateSessionStatus(session, 'terminated');
+    this.eventStore.append(session.id, 'session.status', {
+      status: 'terminated',
+      reason: 'runtime_unavailable',
+    });
   }
 
   private async execOrThrow(driver: SandboxDriver, vmId: string, command: string, description: string): Promise<ExecResult> {

@@ -6,7 +6,7 @@ import { EventReporter } from './reporter.js';
 import { ControlPlaneClient, parseControlPlaneUrls } from './control-plane-client.js';
 import { PolicyGate } from './security/policy-gate.js';
 import { AgentMonitor } from './agent-monitor.js';
-import { createOpenClawGatewayInvoker, routeAgentCommand } from './command-router.js';
+import { abortAgentCommand, createOpenClawGatewayAborter, createOpenClawGatewayInvoker, routeAgentCommand } from './command-router.js';
 import type { AMPGateRequest, AMPGateVerdict, AMPAgentError } from '@paddock/types';
 
 const COMMAND_FILE = process.env.PADDOCK_COMMAND_FILE ?? '/tmp/paddock-commands.jsonl';
@@ -116,6 +116,8 @@ export function createAmpGateRequestHandler(deps: AmpGateServerDeps) {
       await handleAgentExit(req, res, deps.agentMonitor);
     } else if (req.method === 'POST' && req.url === '/amp/command') {
       await handleCommand(req, res, deps.reporter, deps.commandFile ?? COMMAND_FILE);
+    } else if (req.method === 'POST' && req.url === '/amp/command/abort') {
+      await handleCommandAbort(req, res, deps.reporter);
     } else if (req.method === 'POST' && req.url === '/amp/control') {
       await proxyToControlPlane(req, res, deps.controlPlaneClient, `/api/sessions/${deps.sessionId}/amp/control`);
     } else if (req.method === 'GET' && req.url === '/mcp/tools') {
@@ -328,6 +330,28 @@ async function handleCommand(req: IncomingMessage, res: ServerResponse, reporter
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
+  } catch (err) {
+    res.writeHead(400);
+    res.end(JSON.stringify({ error: String(err) }));
+  }
+}
+
+async function handleCommandAbort(req: IncomingMessage, res: ServerResponse, reporter: EventReporter) {
+  try {
+    const body = JSON.parse(await collectBody(req)) as {
+      transport?: 'amp-command-file' | 'openclaw-gateway';
+      sessionKey?: string;
+      runId?: string;
+    };
+    const result = await abortAgentCommand({
+      transport: body.transport ?? 'openclaw-gateway',
+      sessionKey: body.sessionKey,
+      runId: body.runId,
+      reporter,
+      gatewayAborter: createOpenClawGatewayAborter(),
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, aborted: result.aborted, runId: body.runId ?? null }));
   } catch (err) {
     res.writeHead(400);
     res.end(JSON.stringify({ error: String(err) }));

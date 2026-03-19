@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { HITLModal } from './components/HITLModal.js';
+import { CommandCenter } from './components/CommandCenter.js';
 import { DeployPipeline } from './components/DeployPipeline.js';
 import { EventTimeline } from './components/EventTimeline.js';
 import { ErrorBanner } from './components/ErrorBanner.js';
 import { VMPanel } from './components/VMPanel.js';
 import { LLMConfigPanel } from './components/LLMConfigPanel.js';
+import { buildCommandRuns } from './command-groups.js';
 import { getAgentLifecycleState, getCommandInputState, hasSessionError, isAgentDeploying, isAgentReady, isSandboxReady } from './ui-state.js';
 
 // ─── Types ───
@@ -27,6 +28,8 @@ interface SessionSummary {
   agentType: string;
   sandboxType: string;
   createdAt: number;
+  updatedAt?: number;
+  vmId?: string;
 }
 
 interface HealthWarning {
@@ -66,13 +69,27 @@ interface HealthResponse {
   };
 }
 
+interface PendingApproval {
+  id: string;
+  sessionId: string;
+  toolName: string;
+  toolArgs: Record<string, unknown>;
+  reason: string;
+  timestamp: number;
+  riskScore?: number;
+  triggeredRules?: string[];
+}
+
 // ─── WebSocket Hook ───
 function useEventStream(sessionId: string | null) {
   const [events, setEvents] = useState<PaddockEvent[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId) {
+      setEvents([]);
+      return;
+    }
     fetch(`/api/sessions/${sessionId}/events`)
       .then((r) => r.json())
       .then((data) => setEvents(data))
@@ -100,7 +117,7 @@ function useEventStream(sessionId: string | null) {
 function SandboxSelector({ value, onChange }: { value: SandboxType; onChange: (v: SandboxType) => void }) {
   return (
     <select value={value} onChange={(e) => onChange(e.target.value as SandboxType)}
-      className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300" aria-label="Select sandbox type">
+      className="w-full min-w-0 bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-xs text-gray-300" aria-label="Select sandbox type">
       <option value="simple-box">Simple Box (Headless Ubuntu 22.04)</option>
       <option value="computer-box">Computer Box (GUI Ubuntu XFCE Desktop)</option>
       <option value="cua" disabled>CUA (macOS) — Coming Soon</option>
@@ -111,7 +128,7 @@ function SandboxSelector({ value, onChange }: { value: SandboxType; onChange: (v
 function AgentSelector({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
     <select value={value} onChange={(e) => onChange(e.target.value)}
-      className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300" aria-label="Select agent type">
+      className="w-full min-w-0 bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-xs text-gray-300" aria-label="Select agent type">
       <option value="openclaw">OpenClaw (auto-install)</option>
     </select>
   );
@@ -121,10 +138,14 @@ function CommandInput({
   onSend,
   disabled,
   hint,
+  onStop,
+  stopping,
 }: {
   onSend: (cmd: string) => void;
   disabled: boolean;
   hint: string;
+  onStop?: () => void;
+  stopping?: boolean;
 }) {
   const [value, setValue] = useState('');
   const submit = () => { if (disabled || !value.trim()) return; onSend(value.trim()); setValue(''); };
@@ -146,9 +167,280 @@ function CommandInput({
         >
           Send
         </button>
+        {onStop && (
+          <button
+            type="button"
+            onClick={onStop}
+            disabled={stopping}
+            className="px-4 py-2 bg-red-950 hover:bg-red-900 border border-red-900 rounded text-sm text-red-200 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {stopping ? 'Stopping…' : 'Stop Current'}
+          </button>
+        )}
       </div>
       {disabled && <div className="px-4 pb-3 text-[11px] text-gray-500">{hint}</div>}
     </div>
+  );
+}
+
+function formatSessionStatus(status: string): string {
+  switch (status) {
+    case 'running':
+      return 'Running';
+    case 'created':
+      return 'Starting';
+    case 'paused':
+      return 'Paused';
+    case 'terminated':
+      return 'Stopped';
+    case 'error':
+      return 'Error';
+    default:
+      return status;
+  }
+}
+
+function sortSessions(sessions: SessionSummary[]): SessionSummary[] {
+  const order = new Map([
+    ['running', 0],
+    ['created', 1],
+    ['paused', 2],
+    ['error', 3],
+    ['terminated', 4],
+  ]);
+  return [...sessions].sort((left, right) => {
+    const leftRank = order.get(left.status) ?? 99;
+    const rightRank = order.get(right.status) ?? 99;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    return (right.updatedAt ?? right.createdAt) - (left.updatedAt ?? left.createdAt);
+  });
+}
+
+function SessionSidebar({
+  sessions,
+  selectedSessionId,
+  sandboxType,
+  creating,
+  createError,
+  collapsed,
+  showArchived,
+  onSandboxTypeChange,
+  onCreateSession,
+  onSelectSession,
+  onDeleteSession,
+  onToggleCollapsed,
+  onToggleArchived,
+}: {
+  sessions: SessionSummary[];
+  selectedSessionId: string | null;
+  sandboxType: SandboxType;
+  creating: boolean;
+  createError: string | null;
+  collapsed: boolean;
+  showArchived: boolean;
+  onSandboxTypeChange: (value: SandboxType) => void;
+  onCreateSession: () => void;
+  onSelectSession: (session: SessionSummary) => void;
+  onDeleteSession: (sessionId: string) => void;
+  onToggleCollapsed: () => void;
+  onToggleArchived: () => void;
+}) {
+  const sortedSessions = sortSessions(sessions);
+  const liveSessions = sortedSessions.filter((session) => !['terminated', 'error'].includes(session.status));
+  const archivedSessions = sortedSessions.filter((session) => ['terminated', 'error'].includes(session.status));
+
+  if (collapsed) {
+    return (
+      <aside className="w-20 shrink-0 border-r border-gray-800 bg-gray-950/90 flex flex-col items-center py-4 gap-3">
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          className="flex h-10 w-10 items-center justify-center rounded-2xl border border-gray-800 bg-gray-900 text-gray-300 hover:border-gray-700 hover:text-white"
+          aria-label="Expand sidebar"
+        >
+          »
+        </button>
+        <button
+          type="button"
+          onClick={onCreateSession}
+          disabled={creating}
+          className="flex h-10 w-10 items-center justify-center rounded-2xl bg-cyan-700 text-lg font-semibold text-white hover:bg-cyan-600 disabled:opacity-60"
+          aria-label="Create sandbox"
+        >
+          +
+        </button>
+        <div className="flex flex-1 flex-col gap-2 overflow-y-auto px-2">
+          {liveSessions.map((session) => {
+            const active = session.id === selectedSessionId;
+            return (
+              <button
+                key={session.id}
+                type="button"
+                onClick={() => onSelectSession(session)}
+                className={`flex h-11 w-11 items-center justify-center rounded-2xl border text-[10px] font-medium ${
+                  active
+                    ? 'border-cyan-700 bg-cyan-950/40 text-cyan-200'
+                    : 'border-gray-800 bg-gray-900 text-gray-400 hover:border-gray-700 hover:text-white'
+                }`}
+                aria-label={session.id}
+                title={`${session.id} · ${formatSessionStatus(session.status)}`}
+              >
+                {session.sandboxType === 'computer-box' ? 'GUI' : 'VM'}
+              </button>
+            );
+          })}
+        </div>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="w-[360px] shrink-0 border-r border-gray-800 bg-gray-950/90 flex flex-col min-h-0">
+      <div className="border-b border-gray-800 px-4 py-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-100">Sandboxes</h2>
+            <p className="mt-1 text-xs text-gray-500">Create, switch, and clean up VMs without leaving the current session.</p>
+          </div>
+          <button
+            type="button"
+            onClick={onToggleCollapsed}
+            className="flex h-9 w-9 items-center justify-center rounded-2xl border border-gray-800 bg-gray-900 text-gray-300 hover:border-gray-700 hover:text-white"
+            aria-label="Collapse sidebar"
+          >
+            «
+          </button>
+        </div>
+      </div>
+
+      <div className="border-b border-gray-800 px-4 py-4 space-y-3">
+        <div>
+          <label className="block text-[11px] uppercase tracking-wide text-gray-500 mb-2">New Sandbox</label>
+          <SandboxSelector value={sandboxType} onChange={onSandboxTypeChange} />
+        </div>
+        {createError && (
+          <div className="rounded-xl border border-red-900 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+            {createError}
+          </div>
+        )}
+        <button
+          onClick={onCreateSession}
+          disabled={creating}
+          className="w-full rounded-xl bg-cyan-700 px-4 py-2.5 text-sm font-medium text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {creating ? 'Creating…' : 'Create Sandbox'}
+        </button>
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
+        <div className="space-y-2">
+          {liveSessions.map((session) => {
+            const active = session.id === selectedSessionId;
+            const statusTone =
+              session.status === 'running'
+                ? 'bg-emerald-500'
+                : session.status === 'error'
+                  ? 'bg-red-500'
+                  : 'bg-yellow-500';
+            return (
+              <div
+                key={session.id}
+                className={`rounded-2xl border transition ${
+                  active
+                    ? 'border-cyan-700 bg-cyan-950/40'
+                    : 'border-gray-800 bg-gray-900/70 hover:border-gray-700 hover:bg-gray-900'
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => onSelectSession(session)}
+                  className="w-full min-w-0 px-3 py-3 text-left"
+                  aria-label={session.id}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium text-gray-100">{session.id}</div>
+                      <div className="mt-1 text-[11px] text-gray-500">
+                        {session.sandboxType === 'computer-box' ? 'GUI Ubuntu' : 'Headless Ubuntu'}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`h-2.5 w-2.5 rounded-full ${statusTone}`} />
+                      <span className="rounded-full bg-gray-900 px-2 py-0.5 text-[11px] text-gray-300">
+                        {formatSessionStatus(session.status)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-gray-500">
+                    <span>{session.agentType}</span>
+                    <span>•</span>
+                    <span>{new Date(session.updatedAt ?? session.createdAt).toLocaleString()}</span>
+                  </div>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="mt-5">
+          <button
+            type="button"
+            onClick={onToggleArchived}
+            className="flex w-full items-center justify-between rounded-2xl border border-gray-800 bg-gray-900/70 px-3 py-3 text-left hover:border-gray-700"
+          >
+            <div>
+              <div className="text-sm font-medium text-gray-100">Archived sessions</div>
+              <div className="mt-1 text-[11px] text-gray-500">Old stopped or failed sandboxes from earlier runs.</div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="rounded-full bg-gray-950 px-2 py-0.5 text-[11px] text-gray-400">{archivedSessions.length}</span>
+              <span className="text-gray-500">{showArchived ? '−' : '+'}</span>
+            </div>
+          </button>
+
+          {showArchived && (
+            <div className="mt-2 space-y-2">
+              {archivedSessions.map((session) => (
+                <div key={session.id} className="rounded-2xl border border-gray-800 bg-gray-900/60 px-3 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={() => onSelectSession(session)}
+                      className="min-w-0 flex-1 text-left"
+                      aria-label={session.id}
+                    >
+                      <div className="truncate font-medium text-gray-200">{session.id}</div>
+                      <div className="mt-1 text-[11px] text-gray-500">
+                        {formatSessionStatus(session.status)} · {new Date(session.updatedAt ?? session.createdAt).toLocaleString()}
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDeleteSession(session.id)}
+                      className="rounded-lg border border-red-900 bg-red-950 px-2.5 py-1.5 text-[11px] text-red-300 hover:bg-red-900/70"
+                      aria-label={`Delete ${session.id}`}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {archivedSessions.length === 0 && (
+                <div className="rounded-xl border border-dashed border-gray-800 px-4 py-5 text-xs text-gray-500">
+                  No archived sessions.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {sortedSessions.length === 0 && (
+          <div className="mt-3 rounded-xl border border-dashed border-gray-800 px-4 py-5 text-xs text-gray-500">
+            No sessions yet. Create one to start.
+          </div>
+        )}
+      </div>
+    </aside>
   );
 }
 
@@ -280,15 +572,31 @@ function AgentPanel({
 // ─── App ───
 export function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [sandboxType, setSandboxType] = useState<SandboxType>('simple-box');
+  const [draftSandboxType, setDraftSandboxType] = useState<SandboxType>('simple-box');
   const [deploying, setDeploying] = useState(false);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [healthWarnings, setHealthWarnings] = useState<HealthWarning[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'monitor' | 'vm' | 'config'>('monitor');
+  const [activeTab, setActiveTab] = useState<'commands' | 'logs' | 'vm'>('commands');
   const [showConfigModal, setShowConfigModal] = useState(false);
+  const [abortingRunId, setAbortingRunId] = useState<string | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [showArchivedSessions, setShowArchivedSessions] = useState(false);
+  const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
   const { events, sendCommand } = useEventStream(sessionId);
+
+  const refreshSessions = useCallback(() => {
+    fetch('/api/sessions')
+      .then(r => r.json())
+      .then((nextSessions: SessionSummary[]) => {
+        setSessions(nextSessions);
+        if (sessionId && !nextSessions.some((session) => session.id === sessionId)) {
+          setSessionId(null);
+        }
+      })
+      .catch(console.error);
+  }, [sessionId]);
 
   const fetchHealth = useCallback(() => {
     fetch('/api/health').then(r => r.json()).then((data: HealthResponse) => {
@@ -300,9 +608,45 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    fetch('/api/sessions').then(r => r.json()).then(setSessions).catch(console.error);
+    refreshSessions();
     fetchHealth();
-  }, [fetchHealth]);
+  }, [fetchHealth, refreshSessions]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refreshSessions();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [refreshSessions]);
+
+  useEffect(() => {
+    if (!sessionId) {
+      setPendingApprovals([]);
+      return;
+    }
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/sessions/${sessionId}/hitl/pending`);
+        const data = await response.json();
+        if (!cancelled) {
+          setPendingApprovals(Array.isArray(data) ? data as PendingApproval[] : []);
+        }
+      } catch {
+        if (!cancelled) {
+          setPendingApprovals([]);
+        }
+      }
+    };
+
+    void poll();
+    const interval = setInterval(() => void poll(), 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [sessionId]);
 
   const createSession = async () => {
     setDeploying(true);
@@ -310,12 +654,13 @@ export function App() {
     try {
       const res = await fetch('/api/sessions', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agentType: 'none', sandboxType, autoStart: true }),
+        body: JSON.stringify({ agentType: 'none', sandboxType: draftSandboxType, autoStart: true }),
       });
       if (!res.ok) throw new Error(await res.text() || `HTTP ${res.status}`);
       const session = await res.json();
       setSessionId(session.id);
-      setSessions(prev => [session, ...prev]);
+      setSessions(prev => [session, ...prev.filter((existing) => existing.id !== session.id)]);
+      setActiveTab('commands');
     } catch (err) {
       setCreateError((err as Error).message);
       setDeploying(false);
@@ -326,12 +671,17 @@ export function App() {
   const hasError = hasSessionError(events);
   const agentReady = isAgentReady(events);
   const commandState = getCommandInputState(events);
+  const commandRuns = buildCommandRuns(events);
+  const activeCommand = commandRuns.find((run) => run.active && run.stopTargetRunId);
+  const selectedSession = sessions.find((session) => session.id === sessionId) ?? null;
   useEffect(() => { if (sandboxReady || hasError) setDeploying(false); }, [sandboxReady, hasError]);
 
   const killSession = async () => {
     if (!sessionId) return;
     await fetch(`/api/sessions/${sessionId}/kill`, { method: 'POST' });
     setSessionId(null);
+    setAbortingRunId(null);
+    refreshSessions();
   };
 
   const handleHITLDecision = async (requestId: string, verdict: 'approved' | 'rejected') => {
@@ -342,15 +692,46 @@ export function App() {
     });
   };
 
+  const handleAbortCommand = async (runId: string) => {
+    if (!sessionId) return;
+    setAbortingRunId(runId);
+    try {
+      await fetch(`/api/sessions/${sessionId}/commands/abort`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId }),
+      });
+    } finally {
+      setAbortingRunId(null);
+    }
+  };
+
+  const handleDeleteSession = async (targetSessionId: string) => {
+    await fetch(`/api/sessions/${targetSessionId}`, { method: 'DELETE' });
+    if (sessionId === targetSessionId) {
+      setSessionId(null);
+      setAbortingRunId(null);
+      setPendingApprovals([]);
+    }
+    refreshSessions();
+  };
+
+  const openSession = (session: SessionSummary) => {
+    setSessionId(session.id);
+    setDeploying(false);
+    setCreateError(null);
+    setDraftSandboxType(session.sandboxType as SandboxType);
+    setActiveTab('commands');
+  };
+
   const lastGate = [...events].reverse().find(e => e.type === 'amp.gate.verdict');
   const trustScore = lastGate ? 100 - (lastGate.payload.riskScore as number ?? 0) : 100;
 
-  const vmTabLabel = sandboxType === 'computer-box' ? 'Desktop' : 'Terminal';
+  const currentSandboxType = (selectedSession?.sandboxType as SandboxType | undefined) ?? draftSandboxType;
+  const vmTabLabel = currentSandboxType === 'computer-box' ? 'Desktop' : 'Terminal';
 
   return (
     <div className="h-screen flex flex-col">
-      {sessionId && <HITLModal sessionId={sessionId} onDecide={handleHITLDecision} />}
-
       {showConfigModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowConfigModal(false)}>
           <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 max-w-lg w-full mx-4" onClick={(e) => e.stopPropagation()}>
@@ -376,7 +757,7 @@ export function App() {
 
       <header className="flex items-center justify-between px-4 py-3 border-b border-gray-800 bg-gray-950">
         <div className="flex items-center gap-3">
-          <button onClick={() => { setSessionId(null); setDeploying(false); setActiveTab('monitor'); }} className="text-lg font-bold tracking-tight hover:text-cyan-400">Paddock</button>
+          <button onClick={() => { setSessionId(null); setDeploying(false); setActiveTab('commands'); }} className="text-lg font-bold tracking-tight hover:text-cyan-400">Paddock</button>
           {sessionId && (
             <>
               <span className="text-xs text-gray-500 bg-gray-900 px-2 py-0.5 rounded">{sessionId}</span>
@@ -401,75 +782,93 @@ export function App() {
       <ConfigBanner warnings={healthWarnings} />
       <ErrorBanner events={events} />
 
-      {sessionId && !deploying ? (
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Tab bar */}
-          <div className="flex border-b border-gray-800 bg-gray-950">
-            <button onClick={() => setActiveTab('monitor')}
-              className={`px-4 py-2 text-xs ${activeTab === 'monitor' ? 'text-white border-b-2 border-cyan-500' : 'text-gray-500 hover:text-gray-300'}`}>
-              Monitor
-            </button>
-            <button onClick={() => setActiveTab('vm')}
-              className={`px-4 py-2 text-xs ${activeTab === 'vm' ? 'text-white border-b-2 border-cyan-500' : 'text-gray-500 hover:text-gray-300'}`}>
-              {vmTabLabel}
-            </button>
-          </div>
+      <div className="flex-1 min-h-0 flex">
+        <SessionSidebar
+          sessions={sessions}
+          selectedSessionId={sessionId}
+          sandboxType={draftSandboxType}
+          creating={deploying && !sessionId}
+          createError={createError}
+          collapsed={sidebarCollapsed}
+          showArchived={showArchivedSessions}
+          onSandboxTypeChange={setDraftSandboxType}
+          onCreateSession={createSession}
+          onSelectSession={openSession}
+          onDeleteSession={handleDeleteSession}
+          onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
+          onToggleArchived={() => setShowArchivedSessions((value) => !value)}
+        />
 
-          {activeTab === 'monitor' ? (
-            <>
-              <AgentPanel key={sessionId} sessionId={sessionId} events={events} health={health} />
-              <SecurityPanel events={events} />
-              <EventTimeline events={events} sessionId={sessionId} />
-              <CommandInput onSend={sendCommand} disabled={commandState.disabled} hint={commandState.hint} />
-            </>
-          ) : (
-            <VMPanel sessionId={sessionId} sandboxType={sandboxType} events={events} />
-          )}
-        </div>
-      ) : sessionId && deploying ? (
-        <div className="flex-1 flex items-center justify-center">
-          <div className="space-y-4 w-96">
-            <h2 className="text-sm font-semibold text-gray-400">Setting up sandbox...</h2>
-            <DeployPipeline events={events} />
-          </div>
-        </div>
-      ) : (
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center space-y-6 max-w-md">
-            <h2 className="text-xl font-semibold text-gray-200">Create a Sandbox</h2>
-            <p className="text-xs text-gray-500">Start a sandbox VM with Sidecar. You can deploy an agent after it's running.</p>
-            <div className="space-y-3 text-left">
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Sandbox Type</label>
-                <SandboxSelector value={sandboxType} onChange={setSandboxType} />
+        <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
+          {sessionId && deploying ? (
+            <div className="flex-1 flex items-center justify-center">
+              <div className="space-y-4 w-[32rem] max-w-full px-6">
+                <h2 className="text-sm font-semibold text-gray-400">Setting up sandbox...</h2>
+                <DeployPipeline events={events} />
               </div>
             </div>
-            {createError && (
-              <div className="text-left text-xs text-red-400 bg-red-950 border border-red-900 rounded px-3 py-2">{createError}</div>
-            )}
-            <button onClick={createSession} className="w-full px-4 py-2 bg-cyan-700 hover:bg-cyan-600 rounded text-sm font-medium">
-              Create Sandbox
-            </button>
-            {sessions.length > 0 && (
-              <div className="mt-8 text-left">
-                <h3 className="text-xs text-gray-500 mb-2 uppercase tracking-wide">Previous Sessions</h3>
-                <div className="space-y-1 max-h-48 overflow-y-auto">
-                  {sessions.map(s => (
-                    <button key={s.id} onClick={() => { setSessionId(s.id); setDeploying(false); }}
-                      className="w-full flex items-center justify-between px-3 py-2 bg-gray-900 hover:bg-gray-800 rounded text-xs">
-                      <span className="text-gray-400 truncate">{s.id}</span>
-                      <span className="flex items-center gap-2">
-                        <span className="text-gray-500">{s.sandboxType}</span>
-                        <span className={`w-1.5 h-1.5 rounded-full ${s.status === 'running' ? 'bg-green-400' : s.status === 'terminated' || s.status === 'error' ? 'bg-red-400' : 'bg-yellow-400'}`} />
-                      </span>
-                    </button>
-                  ))}
-                </div>
+          ) : sessionId ? (
+            <>
+              <div className="flex border-b border-gray-800 bg-gray-950">
+                <button
+                  onClick={() => setActiveTab('commands')}
+                  className={`px-4 py-2 text-xs ${activeTab === 'commands' ? 'text-white border-b-2 border-cyan-500' : 'text-gray-500 hover:text-gray-300'}`}
+                >
+                  Commands
+                </button>
+                <button
+                  onClick={() => setActiveTab('logs')}
+                  className={`px-4 py-2 text-xs ${activeTab === 'logs' ? 'text-white border-b-2 border-cyan-500' : 'text-gray-500 hover:text-gray-300'}`}
+                >
+                  Raw Logs
+                </button>
+                <button
+                  onClick={() => setActiveTab('vm')}
+                  className={`px-4 py-2 text-xs ${activeTab === 'vm' ? 'text-white border-b-2 border-cyan-500' : 'text-gray-500 hover:text-gray-300'}`}
+                >
+                  {vmTabLabel}
+                </button>
               </div>
-            )}
-          </div>
-        </div>
-      )}
+
+              {activeTab !== 'vm' && <AgentPanel key={sessionId} sessionId={sessionId} events={events} health={health} />}
+              {activeTab === 'commands' && <SecurityPanel events={events} />}
+
+              {activeTab === 'commands' ? (
+                <CommandCenter
+                  events={events}
+                  onAbortCommand={handleAbortCommand}
+                  abortingRunId={abortingRunId}
+                  pendingApprovals={pendingApprovals}
+                  onHitlDecision={handleHITLDecision}
+                />
+              ) : activeTab === 'logs' ? (
+                <EventTimeline events={events} sessionId={sessionId} />
+              ) : (
+                <VMPanel sessionId={sessionId} sandboxType={currentSandboxType} events={events} />
+              )}
+
+              {activeTab !== 'vm' && (
+                <CommandInput
+                  onSend={sendCommand}
+                  disabled={commandState.disabled}
+                  hint={commandState.hint}
+                  onStop={activeCommand?.stopTargetRunId ? () => void handleAbortCommand(activeCommand.stopTargetRunId!) : undefined}
+                  stopping={abortingRunId === activeCommand?.stopTargetRunId}
+                />
+              )}
+            </>
+          ) : (
+            <div className="flex-1 flex items-center justify-center p-10">
+              <div className="max-w-xl rounded-3xl border border-gray-800 bg-gray-950/70 p-8">
+                <h2 className="text-2xl font-semibold text-gray-100">Create a sandbox or reopen an existing one</h2>
+                <p className="mt-3 text-sm leading-6 text-gray-500">
+                  The sidebar stays available the whole time, so you can keep multiple VMs around and switch between them without losing your place.
+                </p>
+              </div>
+            </div>
+          )}
+        </main>
+      </div>
     </div>
   );
 }

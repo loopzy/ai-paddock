@@ -34,6 +34,7 @@ export type EventType =
   | 'amp.snapshot.created' | 'amp.snapshot.restored'
   | 'amp.hitl.request' | 'amp.hitl.decision'
   | 'amp.user.command'
+  | 'amp.command.status'
   | 'amp.gate.verdict'
   // Agent Lifecycle
   | 'amp.agent.ready' | 'amp.agent.message' | 'amp.agent.heartbeat'

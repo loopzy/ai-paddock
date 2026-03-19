@@ -65,6 +65,14 @@ function EventDetail({ event }: { event: PaddockEvent }) {
       return <span className="text-green-400">Agent ready: {p.agent as string} v{p.version as string}</span>;
     case 'amp.agent.message':
       return <span className="text-emerald-300 whitespace-pre-wrap">{((p.text as string) ?? '').slice(0, 400)}</span>;
+    case 'amp.command.status':
+      return (
+        <span>
+          <span className="text-indigo-300">{(p.status as string) ?? 'updated'}</span>
+          {(p.runId as string) && <span className="text-gray-500 ml-2">{p.runId as string}</span>}
+          {(p.command as string) && <span className="text-gray-400 ml-2">{(p.command as string).slice(0, 120)}</span>}
+        </span>
+      );
     case 'amp.agent.heartbeat':
       return <span className="text-gray-500">uptime {p.uptime as number}s · {p.memoryMB as number}MB</span>;
     case 'amp.agent.error':

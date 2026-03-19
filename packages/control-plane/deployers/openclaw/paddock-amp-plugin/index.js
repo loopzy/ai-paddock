@@ -216,6 +216,29 @@ function extractMessageText(value) {
   return textParts.join('\n').trim();
 }
 
+function extractLatestAssistantMessage(messages) {
+  if (!Array.isArray(messages)) {
+    return undefined;
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || typeof message !== 'object') {
+      continue;
+    }
+    if (message.role !== 'assistant') {
+      continue;
+    }
+    return message;
+  }
+
+  return undefined;
+}
+
+function messageDedupKey(ctx, text) {
+  return `${ctx?.sessionKey ?? 'session'}:${ctx?.runId ?? 'run'}:${text}`;
+}
+
 async function reportTraceEvent(config, log, phase, event, ctx, timeoutMs = 2000) {
   const payload = buildLifecyclePayload(phase, event, ctx);
   await reportAmpEvent(config, log, 'amp.trace', payload, timeoutMs);
@@ -227,6 +250,31 @@ export default {
     const config = resolveRuntimeConfig(api);
     const log = createLogger(api, config.logFile);
     const correlationByToolCall = new Map();
+    const reportedAgentMessages = new Set();
+
+    async function reportAgentMessageOnce(event, ctx) {
+      if (!ctx?.runId) {
+        return;
+      }
+      const messageText = extractMessageText(event?.message) || extractMessageText(event?.content);
+      if (!messageText) {
+        return;
+      }
+
+      const dedupeKey = messageDedupKey(ctx, messageText);
+      if (reportedAgentMessages.has(dedupeKey)) {
+        return;
+      }
+      reportedAgentMessages.add(dedupeKey);
+
+      await reportAmpEvent(config, log, 'amp.agent.message', {
+        text: truncateString(messageText, 4000),
+        success: event?.success !== false,
+        runId: ctx?.runId,
+        agentId: ctx?.agentId,
+        sessionKey: ctx?.sessionKey,
+      });
+    }
 
     log('plugin loaded', {
       sidecarUrl: config.sidecarUrl,
@@ -435,17 +483,34 @@ export default {
         ctx,
       );
       log('message_sent', payload);
-      const messageText = extractMessageText(event?.message) || extractMessageText(event?.content);
-      if (messageText) {
-        await reportAmpEvent(config, log, 'amp.agent.message', {
-          text: truncateString(messageText, 4000),
-          success: event?.success !== false,
-          runId: ctx?.runId,
-          agentId: ctx?.agentId,
-          sessionKey: ctx?.sessionKey,
-        });
-      }
+      await reportAgentMessageOnce(event, ctx);
       await reportTraceEvent(config, log, 'openclaw.message_sent', payload, ctx);
+    });
+
+    api.on('agent_end', async (event, ctx) => {
+      const finalAssistantMessage = extractLatestAssistantMessage(event?.messages);
+      const payload = buildLifecyclePayload(
+        'openclaw.agent_end',
+        {
+          success: event?.success !== false,
+          error: event?.error,
+          durationMs: event?.durationMs,
+          messageCount: Array.isArray(event?.messages) ? event.messages.length : 0,
+          finalAssistant: summarizeMessage(finalAssistantMessage),
+        },
+        ctx,
+      );
+      log('agent_end', payload);
+      if (finalAssistantMessage) {
+        await reportAgentMessageOnce(
+          {
+            message: finalAssistantMessage,
+            success: event?.success !== false,
+          },
+          ctx,
+        );
+      }
+      await reportTraceEvent(config, log, 'openclaw.agent_end', payload, ctx);
     });
 
     api.on('subagent_spawning', async (event, ctx) => {
@@ -511,6 +576,7 @@ export default {
         ctx,
       );
       log('before_message_write', payload);
+      void reportAgentMessageOnce(event, ctx);
       void reportTraceEvent(config, log, 'openclaw.before_message_write', payload, ctx);
     });
   },

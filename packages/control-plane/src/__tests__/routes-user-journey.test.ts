@@ -199,6 +199,55 @@ describe('Control Plane user journeys', () => {
     }
   });
 
+  it('reconciles stale running sessions in /api/sessions and supports deleting old sessions', async () => {
+    const ctx = await createRouteTestContext();
+
+    try {
+      const session = await ctx.sessionManager.create('none');
+      const runtimeSession = ctx.sessionManager.get(session.id);
+      if (runtimeSession) {
+        runtimeSession.status = 'running';
+        runtimeSession.vmId = 'vm-route-test';
+      }
+      ctx.eventStore.db
+        .prepare('UPDATE sessions SET status = ?, vm_id = ?, updated_at = ? WHERE id = ?')
+        .run('running', 'vm-route-test', Date.now(), session.id);
+
+      const driver = ctx.driver as SandboxDriver & { getInfo: (vmId: string) => Promise<VMInfo | null> };
+      driver.getInfo = async () => null;
+
+      const listResponse = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/sessions',
+      });
+
+      expect(listResponse.statusCode).toBe(200);
+      expect(listResponse.json()).toEqual([
+        expect.objectContaining({
+          id: session.id,
+          status: 'terminated',
+        }),
+      ]);
+
+      const deleteResponse = await ctx.app.inject({
+        method: 'DELETE',
+        url: `/api/sessions/${session.id}`,
+      });
+
+      expect(deleteResponse.statusCode).toBe(200);
+      expect(deleteResponse.json()).toEqual({ deleted: true });
+
+      const sessionsAfterDelete = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/sessions',
+      });
+      expect(sessionsAfterDelete.json()).toEqual([]);
+    } finally {
+      await ctx.app.close();
+      ctx.eventStore.close();
+    }
+  });
+
   it('forwards Dashboard commands into the VM only after the agent is ready', async () => {
     const ctx = await createRouteTestContext();
     let socket: Awaited<ReturnType<typeof openSessionSocket>> | null = null;
@@ -272,6 +321,48 @@ describe('Control Plane user journeys', () => {
       expect(ctx.driver.calls.some((call) => call.method === 'exec' && String(call.args[1]).includes('/amp/command'))).toBe(false);
     } finally {
       await closeSessionSocket(socket);
+      await ctx.app.close();
+      ctx.eventStore.close();
+    }
+  });
+
+  it('aborts an active OpenClaw command through the sidecar command abort endpoint', async () => {
+    const ctx = await createRouteTestContext((command) => {
+      if (command.includes('/amp/command/abort')) {
+        return { stdout: '{"ok":true,"aborted":true}', stderr: '', exitCode: 0 };
+      }
+      return undefined;
+    });
+
+    try {
+      const session = await createRunningSession(ctx);
+      const runtimeSession = ctx.sessionManager.get(session.id);
+      if (runtimeSession) {
+        runtimeSession.agentTransport = 'openclaw-gateway';
+        runtimeSession.agentSessionKey = `paddock:${session.id}`;
+      }
+
+      const response = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/commands/abort`,
+        payload: { runId: 'run-1' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true, aborted: true, runId: 'run-1' });
+
+      const abortCall = ctx.driver.calls.find((call) =>
+        call.method === 'exec' && String(call.args[1]).includes('/amp/command/abort')
+      );
+      expect(abortCall).toBeTruthy();
+
+      const shellCommand = String(abortCall?.args[1]);
+      const encodedPayload = shellCommand.match(/echo '([^']+)' \| base64 -d/)?.[1];
+      expect(encodedPayload).toBeTruthy();
+      const decodedPayload = Buffer.from(encodedPayload!, 'base64').toString('utf8');
+      expect(decodedPayload).toContain(`"sessionKey":"paddock:${session.id}"`);
+      expect(decodedPayload).toContain('"runId":"run-1"');
+    } finally {
       await ctx.app.close();
       ctx.eventStore.close();
     }

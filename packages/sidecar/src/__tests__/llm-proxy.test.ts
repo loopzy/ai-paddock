@@ -118,12 +118,20 @@ describe('LLMProxy', () => {
       expect(await response.text()).toContain('data:');
 
       const responseEvent = reporter.events.find((event) => event.type === 'llm.response');
+      const requestEvent = reporter.events.find((event) => event.type === 'llm.request');
+      expect(requestEvent?.payload.messagesPreview).toEqual([
+        {
+          role: 'user',
+          text: 'hello',
+        },
+      ]);
       expect(responseEvent?.payload.provider).toBe('openrouter');
       expect(responseEvent?.payload.model).toBe('qwen/qwen-2.5-72b-instruct');
       expect(responseEvent?.payload.tokensIn).toBe(321);
       expect(responseEvent?.payload.tokensOut).toBe(45);
       expect(responseEvent?.payload.streamed).toBe(true);
       expect(responseEvent?.payload.chunkCount).toBe(2);
+      expect(responseEvent?.payload.responsePreview).toContain('done');
     } finally {
       proxy.stop();
     }

@@ -8,6 +8,7 @@ const GATEWAY_COMMAND_TIMEOUT_MS = 30_000;
 
 type GatewayCliResponse = {
   runId?: string;
+  aborted?: boolean;
   status?: string;
   error?: unknown;
   message?: unknown;
@@ -25,7 +26,12 @@ export type GatewayCommandReceipt = {
   runId?: string;
 };
 
+export type GatewayAbortReceipt = {
+  aborted: boolean;
+};
+
 export type GatewayCommandInvoker = (command: AgentCommandEnvelope) => Promise<GatewayCommandReceipt>;
+export type GatewayAbortInvoker = (params: { sessionKey: string; runId?: string }) => Promise<GatewayAbortReceipt>;
 
 export async function routeAgentCommand(params: {
   envelope: AgentCommandEnvelope;
@@ -34,12 +40,13 @@ export async function routeAgentCommand(params: {
   gatewayInvoker?: GatewayCommandInvoker;
 }): Promise<void> {
   const transport = params.envelope.transport ?? 'amp-command-file';
+  let receipt: GatewayCommandReceipt | undefined;
 
   if (transport === 'openclaw-gateway') {
     if (!params.gatewayInvoker) {
       throw new Error('OpenClaw gateway transport is not configured in this Sidecar');
     }
-    await params.gatewayInvoker(params.envelope);
+    receipt = await params.gatewayInvoker(params.envelope);
   } else {
     const entry = {
       command: params.envelope.command,
@@ -48,10 +55,53 @@ export async function routeAgentCommand(params: {
     appendFileSync(params.commandFile, JSON.stringify(entry) + '\n');
   }
 
-  await params.reporter.report('amp.user.command' as any, { command: params.envelope.command });
+  const runId = typeof receipt?.runId === 'string' && receipt.runId.trim() ? receipt.runId.trim() : undefined;
+  const eventPayload = {
+    command: params.envelope.command,
+    transport,
+    runId,
+    sessionKey: params.envelope.sessionKey,
+  };
+  await params.reporter.report('amp.user.command' as any, eventPayload);
+  await params.reporter.report('amp.command.status' as any, {
+    ...eventPayload,
+    status: 'accepted',
+  });
 }
 
-export function createOpenClawGatewayInvoker(): GatewayCommandInvoker {
+export async function abortAgentCommand(params: {
+  transport?: 'amp-command-file' | 'openclaw-gateway';
+  sessionKey?: string;
+  runId?: string;
+  reporter: EventReporter;
+  gatewayAborter?: GatewayAbortInvoker;
+}): Promise<GatewayAbortReceipt> {
+  const transport = params.transport ?? 'amp-command-file';
+  if (transport !== 'openclaw-gateway') {
+    throw new Error('The current agent transport does not support aborting commands');
+  }
+  if (!params.gatewayAborter) {
+    throw new Error('OpenClaw gateway abort transport is not configured in this Sidecar');
+  }
+  if (!params.sessionKey?.trim()) {
+    throw new Error('OpenClaw gateway abort requires a sessionKey');
+  }
+
+  const result = await params.gatewayAborter({
+    sessionKey: params.sessionKey.trim(),
+    runId: params.runId?.trim() || undefined,
+  });
+
+  await params.reporter.report('amp.command.status' as any, {
+    status: result.aborted ? 'aborted' : 'abort-requested',
+    runId: params.runId?.trim() || undefined,
+    sessionKey: params.sessionKey.trim(),
+  });
+
+  return result;
+}
+
+function createGatewayCli() {
   const nodeBinary = process.env.PADDOCK_OPENCLAW_NODE ?? 'node';
   const openclawEntrypoint =
     process.env.PADDOCK_OPENCLAW_ENTRYPOINT ?? '/opt/paddock/openclaw-runtime/openclaw.mjs';
@@ -118,6 +168,12 @@ export function createOpenClawGatewayInvoker(): GatewayCommandInvoker {
     }
   };
 
+  return { callGateway };
+}
+
+export function createOpenClawGatewayInvoker(): GatewayCommandInvoker {
+  const { callGateway } = createGatewayCli();
+
   return async (command) => {
     const sessionKey = command.sessionKey?.trim();
     if (!sessionKey) {
@@ -145,5 +201,21 @@ export function createOpenClawGatewayInvoker(): GatewayCommandInvoker {
     console.log(`[openclaw-gateway] chat.send accepted runId=${runId}`);
 
     return { runId };
+  };
+}
+
+export function createOpenClawGatewayAborter(): GatewayAbortInvoker {
+  const { callGateway } = createGatewayCli();
+
+  return async ({ sessionKey, runId }) => {
+    const abortResponse = await callGateway(
+      'chat.abort',
+      runId ? { sessionKey, runId } : { sessionKey },
+      GATEWAY_COMMAND_TIMEOUT_MS,
+    );
+
+    return {
+      aborted: abortResponse.aborted !== false,
+    };
   };
 }
