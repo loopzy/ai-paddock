@@ -2,7 +2,14 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OPENCLAW_SRC="${OPENCLAW_SRC:-$PROJECT_ROOT/tmp/openclaw}"
+if [ -n "${OPENCLAW_SRC:-}" ]; then
+  RESOLVED_OPENCLAW_SRC="$OPENCLAW_SRC"
+elif [ -f "$PROJECT_ROOT/thirdparty/openclaw/package.json" ]; then
+  RESOLVED_OPENCLAW_SRC="$PROJECT_ROOT/thirdparty/openclaw"
+else
+  RESOLVED_OPENCLAW_SRC="$PROJECT_ROOT/thirdparty/openclaw"
+fi
+OPENCLAW_SRC="$RESOLVED_OPENCLAW_SRC"
 DIST_DIR="${DIST_DIR:-$PROJECT_ROOT/dist/openclaw-runtime}"
 DIST_TARBALL="${DIST_TARBALL:-$PROJECT_ROOT/dist/openclaw-runtime.tar.gz}"
 STAGE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-runtime.XXXXXX")"
@@ -15,6 +22,7 @@ trap cleanup EXIT
 
 if [ ! -f "$OPENCLAW_SRC/package.json" ]; then
   echo "OpenClaw source tree not found at $OPENCLAW_SRC" >&2
+  echo "Set OPENCLAW_SRC=/path/to/openclaw, or place the upstream source at thirdparty/openclaw." >&2
   exit 1
 fi
 

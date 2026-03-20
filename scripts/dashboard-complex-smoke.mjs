@@ -1,11 +1,33 @@
 import { execFile as execFileCallback } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
 const require = createRequire(import.meta.url);
-const { chromium } = require('../tmp/openclaw/node_modules/playwright-core');
+const repoRoot = process.cwd();
+
+function resolveOpenClawSourceRoot() {
+  const candidates = [
+    process.env.OPENCLAW_SRC,
+    path.resolve(repoRoot, 'thirdparty', 'openclaw'),
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    const packageJsonPath = path.join(candidate, 'package.json');
+    const playwrightPath = path.join(candidate, 'node_modules', 'playwright-core');
+    if (existsSync(packageJsonPath) && existsSync(playwrightPath)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(
+    'OpenClaw source tree with playwright-core not found. Set OPENCLAW_SRC or clone OpenClaw into thirdparty/openclaw.',
+  );
+}
+
+const { chromium } = require(path.join(resolveOpenClawSourceRoot(), 'node_modules', 'playwright-core'));
 const execFile = promisify(execFileCallback);
 
 const dashboardUrl = process.env.PADDOCK_DASHBOARD_URL ?? 'http://127.0.0.1:3200';

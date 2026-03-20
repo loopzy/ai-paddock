@@ -5,8 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
-const dockerTempDir = resolve(repoRoot, 'tmp', 'docker-temp');
-const dockerBuildContextDir = resolve(repoRoot, 'tmp', 'docker-build-context');
+const dockerTempDir = resolve(repoRoot, '.paddock', 'tmp', 'docker-temp');
+const dockerBuildContextDir = resolve(repoRoot, '.paddock', 'tmp', 'docker-build-context');
 
 const SANDBOX_ROOTFS = {
   'simple-box': {

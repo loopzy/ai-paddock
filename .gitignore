@@ -62,6 +62,17 @@ temp/
 *.tmp
 *.bak
 
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Paddock local build/work directories
+.paddock/tmp/
+
+# Third-party source checkouts
+thirdparty/openclaw/
+thirdparty/boxlite/
+
 # BoxLite / VM artifacts
 *.qcow2
 *.vmdk
