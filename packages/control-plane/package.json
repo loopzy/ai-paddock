@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@paddock/types": "workspace:*",
-    "@boxlite-ai/boxlite": "^0.4.0",
+    "@boxlite-ai/boxlite": "^0.4.3",
     "@fastify/websocket": "^11.0.0",
     "better-sqlite3": "^11.7.0",
     "fastify": "^5.2.0",

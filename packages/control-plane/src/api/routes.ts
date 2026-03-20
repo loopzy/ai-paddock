@@ -3,7 +3,7 @@ import type { EventStore } from '../events/event-store.js';
 import type { SessionManager } from '../session/session-manager.js';
 import type { SnapshotManager } from '../snapshot/snapshot-manager.js';
 import { CronManager } from '../cron/cron-manager.js';
-import type { SandboxDriver } from '@paddock/types';
+import type { SandboxDriver, SandboxSnapshot } from '@paddock/types';
 import type { HITLArbiter } from '../hitl/arbiter.js';
 import type { MCPGateway } from '../mcp/gateway.js';
 import type { LLMRelay, LLMProxyRequest } from '../mcp/llm-relay.js';
@@ -316,16 +316,38 @@ export function registerRoutes(app: FastifyInstance, deps: Deps) {
     return snapshotManager.list(req.params.sessionId);
   });
 
-  app.post<{ Params: { sessionId: string }; Body: { label?: string } }>('/api/sessions/:sessionId/snapshots', async (req) => {
+  app.post<{ Params: { sessionId: string }; Body: { label?: string; mode?: 'live' | 'stopped' } }>('/api/sessions/:sessionId/snapshots', async (req) => {
     const { sessionId } = req.params;
     const session = sessionManager.get(sessionId);
     if (!session?.vmId) return { error: 'Session not running' };
     const events = eventStore.getEvents(sessionId);
     const seq = events.length > 0 ? events[events.length - 1].seq : 0;
-    const driver = sessionManager.getDriverForSession(sessionId);
-    const boxSnapshot = await driver.createSnapshot(session.vmId, req.body.label);
-    const snapshot = snapshotManager.create(sessionId, seq, boxSnapshot.boxliteSnapshotId, req.body.label);
-    eventStore.append(sessionId, 'snapshot.created', { snapshotId: snapshot.id, seq, label: req.body.label });
+    const driver = sessionManager.getDriverForSession(sessionId) as SandboxDriver & {
+      createConsistentSnapshot?: (vmId: string, label?: string) => Promise<SandboxSnapshot>;
+    };
+    const mode = req.body.mode === 'stopped' ? 'stopped' : 'live';
+    const boxSnapshot = mode === 'stopped' && 'createConsistentSnapshot' in driver && typeof driver.createConsistentSnapshot === 'function'
+      ? await driver.createConsistentSnapshot(session.vmId, req.body.label)
+      : await driver.createSnapshot(session.vmId, req.body.label);
+    const snapshot = snapshotManager.create(
+      sessionId,
+      seq,
+      boxSnapshot.boxliteSnapshotId,
+      req.body.label,
+      {
+        sizeBytes: boxSnapshot.sizeBytes,
+        containerDiskBytes: boxSnapshot.containerDiskBytes,
+      },
+      boxSnapshot.consistencyMode ?? mode,
+    );
+    eventStore.append(sessionId, 'snapshot.created', {
+      snapshotId: snapshot.id,
+      seq,
+      label: req.body.label,
+      sizeBytes: snapshot.sizeBytes,
+      containerDiskBytes: snapshot.containerDiskBytes,
+      consistencyMode: snapshot.consistencyMode,
+    });
     return snapshot;
   });
 

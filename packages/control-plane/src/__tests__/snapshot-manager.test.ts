@@ -18,13 +18,19 @@ describe('SnapshotManager', () => {
 
   describe('create', () => {
     it('should create a snapshot record', () => {
-      const snap = manager.create('sess-1', 5, 'bx-snap-1', 'before refactor');
+      const snap = manager.create('sess-1', 5, 'bx-snap-1', 'before refactor', {
+        sizeBytes: 1234,
+        containerDiskBytes: 5678,
+      });
       expect(snap.id).toBeTruthy();
       expect(snap.sessionId).toBe('sess-1');
       expect(snap.seq).toBe(5);
       expect(snap.label).toBe('before refactor');
       expect(snap.boxliteSnapshotId).toBe('bx-snap-1');
       expect(snap.createdAt).toBeGreaterThan(0);
+      expect(snap.sizeBytes).toBe(1234);
+      expect(snap.containerDiskBytes).toBe(5678);
+      expect(snap.consistencyMode).toBe('live');
     });
 
     it('should create snapshot without label', () => {
@@ -52,11 +58,13 @@ describe('SnapshotManager', () => {
 
   describe('get', () => {
     it('should get a snapshot by id', () => {
-      const snap = manager.create('sess-1', 5, 'bx-1', 'test');
+      const snap = manager.create('sess-1', 5, 'bx-1', 'test', { sizeBytes: 42 });
       const found = manager.get(snap.id);
       expect(found).toBeTruthy();
       expect(found!.id).toBe(snap.id);
       expect(found!.label).toBe('test');
+      expect(found!.sizeBytes).toBe(42);
+      expect(found!.consistencyMode).toBe('live');
     });
 
     it('should return null for unknown snapshot', () => {

@@ -5,14 +5,46 @@ import { tmpdir } from 'node:os';
 import { SIMPLE_BOX_ROOTFS_ENV } from '../sandbox/simple-box-rootfs.js';
 
 const constructorCalls: Array<Record<string, unknown>> = [];
+const snapshotCalls: Array<{ method: string; args: unknown[] }> = [];
+const runtimeRemoveCalls: Array<unknown[]> = [];
 
 vi.mock('@boxlite-ai/boxlite', () => {
   class MockSimpleBox {
     name?: string;
+    private nativeBox = {
+      start: async () => {
+        snapshotCalls.push({ method: 'native.start', args: [] });
+      },
+      snapshot: {
+        create: async (name: string) => {
+          snapshotCalls.push({ method: 'snapshot.create', args: [name] });
+          return {
+            id: 'native-snap-1',
+            name,
+            createdAt: 1_700_000_000,
+            sizeBytes: 4096,
+            containerDiskBytes: 8192,
+          };
+        },
+        restore: async (name: string) => {
+          snapshotCalls.push({ method: 'snapshot.restore', args: [name] });
+        },
+      },
+    };
+    _runtime = {
+      get: async () => this.nativeBox,
+      remove: async (...args: unknown[]) => {
+        runtimeRemoveCalls.push(args);
+      },
+    };
 
     constructor(options: Record<string, unknown>) {
       constructorCalls.push(options);
       this.name = typeof options.name === 'string' ? options.name : undefined;
+    }
+
+    async _ensureBox() {
+      return this.nativeBox;
     }
 
     async getId() { return 'vm-simple-123'; }
@@ -35,6 +67,8 @@ describe('SimpleBoxDriver', () => {
 
   beforeEach(() => {
     constructorCalls.length = 0;
+    snapshotCalls.length = 0;
+    runtimeRemoveCalls.length = 0;
   });
 
   afterEach(() => {
@@ -58,6 +92,7 @@ describe('SimpleBoxDriver', () => {
       expect(constructorCalls[0].rootfsPath).toBe(rootfsDir);
       expect(constructorCalls[0].name).toBe('headless-test');
       expect(constructorCalls[0].diskSizeGb).toBe(12);
+      expect(constructorCalls[0].autoRemove).toBe(false);
     } finally {
       rmSync(rootfsDir, { recursive: true, force: true });
     }
@@ -70,5 +105,44 @@ describe('SimpleBoxDriver', () => {
 
     expect(constructorCalls).toHaveLength(1);
     expect(constructorCalls[0].diskSizeGb).toBe(18);
+  });
+
+  it('creates a real snapshot via the native snapshot handle', async () => {
+    const { SimpleBoxDriver } = await import('../sandbox/simple-box-driver.js');
+    const driver = new SimpleBoxDriver();
+    const vmId = await driver.createBox({ sandboxType: 'simple-box' });
+
+    const snapshot = await driver.createSnapshot(vmId, 'before-edit');
+
+    expect(snapshot.boxliteSnapshotId).toContain('before-edit');
+    expect(snapshot.sizeBytes).toBe(4096);
+    expect(snapshot.containerDiskBytes).toBe(8192);
+    expect(snapshot.createdAt).toBe(1_700_000_000_000);
+    expect(snapshotCalls.some((call) => call.method === 'snapshot.create')).toBe(true);
+  });
+
+  it('restores a snapshot by stopping the box, restoring disks, and starting it again', async () => {
+    const { SimpleBoxDriver } = await import('../sandbox/simple-box-driver.js');
+    const driver = new SimpleBoxDriver();
+    const vmId = await driver.createBox({ sandboxType: 'simple-box' });
+
+    await driver.restoreSnapshot(vmId, 'snap-restore-1');
+
+    expect(snapshotCalls).toEqual(
+      expect.arrayContaining([
+        { method: 'snapshot.restore', args: ['snap-restore-1'] },
+        { method: 'native.start', args: [] },
+      ]),
+    );
+  });
+
+  it('removes the stopped box from the runtime when destroyed', async () => {
+    const { SimpleBoxDriver } = await import('../sandbox/simple-box-driver.js');
+    const driver = new SimpleBoxDriver();
+    const vmId = await driver.createBox({ sandboxType: 'simple-box' });
+
+    await driver.destroyBox(vmId);
+
+    expect(runtimeRemoveCalls).toEqual([[vmId, true]]);
   });
 });

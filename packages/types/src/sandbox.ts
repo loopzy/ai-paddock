@@ -30,6 +30,9 @@ export interface SandboxSnapshot {
   label?: string;
   createdAt: number;
   boxliteSnapshotId: string;
+  sizeBytes?: number;
+  containerDiskBytes?: number;
+  consistencyMode?: 'live' | 'stopped';
 }
 
 /** Common interface all sandbox drivers must implement */

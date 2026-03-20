@@ -13,12 +13,34 @@ export class SnapshotManager {
 
   constructor(db: Database.Database) {
     this.db = db;
+    this.migrate();
+  }
+
+  private migrate() {
+    const cols = this.db.prepare('PRAGMA table_info(snapshots)').all() as Array<{ name: string }>;
+    const names = new Set(cols.map((col) => col.name));
+    if (!names.has('size_bytes')) {
+      this.db.exec('ALTER TABLE snapshots ADD COLUMN size_bytes INTEGER');
+    }
+    if (!names.has('container_disk_bytes')) {
+      this.db.exec('ALTER TABLE snapshots ADD COLUMN container_disk_bytes INTEGER');
+    }
+    if (!names.has('consistency_mode')) {
+      this.db.exec("ALTER TABLE snapshots ADD COLUMN consistency_mode TEXT NOT NULL DEFAULT 'live'");
+    }
   }
 
   /**
    * Create a snapshot record.
    */
-  create(sessionId: string, seq: number, boxliteSnapshotId: string, label?: string): Snapshot {
+  create(
+    sessionId: string,
+    seq: number,
+    boxliteSnapshotId: string,
+    label?: string,
+    metrics?: { sizeBytes?: number; containerDiskBytes?: number },
+    consistencyMode: 'live' | 'stopped' = 'live',
+  ): Snapshot {
     const snapshot: Snapshot = {
       id: nanoid(),
       sessionId,
@@ -26,12 +48,25 @@ export class SnapshotManager {
       label,
       createdAt: Date.now(),
       boxliteSnapshotId,
+      sizeBytes: metrics?.sizeBytes,
+      containerDiskBytes: metrics?.containerDiskBytes,
+      consistencyMode,
     };
 
     this.db
-      .prepare(`INSERT INTO snapshots (id, session_id, seq, label, created_at, boxlite_snapshot_id)
-                VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(snapshot.id, snapshot.sessionId, snapshot.seq, snapshot.label ?? null, snapshot.createdAt, snapshot.boxliteSnapshotId);
+      .prepare(`INSERT INTO snapshots (id, session_id, seq, label, created_at, boxlite_snapshot_id, size_bytes, container_disk_bytes, consistency_mode)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        snapshot.id,
+        snapshot.sessionId,
+        snapshot.seq,
+        snapshot.label ?? null,
+        snapshot.createdAt,
+        snapshot.boxliteSnapshotId,
+        snapshot.sizeBytes ?? null,
+        snapshot.containerDiskBytes ?? null,
+        snapshot.consistencyMode,
+      );
 
     return snapshot;
   }
@@ -44,7 +79,7 @@ export class SnapshotManager {
       .prepare('SELECT * FROM snapshots WHERE session_id = ? ORDER BY seq ASC')
       .all(sessionId) as Array<{
         id: string; session_id: string; seq: number; label: string | null;
-        created_at: number; boxlite_snapshot_id: string;
+        created_at: number; boxlite_snapshot_id: string; size_bytes: number | null; container_disk_bytes: number | null; consistency_mode: 'live' | 'stopped';
       }>;
 
     return rows.map((r) => ({
@@ -54,6 +89,9 @@ export class SnapshotManager {
       label: r.label ?? undefined,
       createdAt: r.created_at,
       boxliteSnapshotId: r.boxlite_snapshot_id,
+      sizeBytes: r.size_bytes ?? undefined,
+      containerDiskBytes: r.container_disk_bytes ?? undefined,
+      consistencyMode: r.consistency_mode,
     }));
   }
 
@@ -65,7 +103,7 @@ export class SnapshotManager {
       .prepare('SELECT * FROM snapshots WHERE id = ?')
       .get(snapshotId) as {
         id: string; session_id: string; seq: number; label: string | null;
-        created_at: number; boxlite_snapshot_id: string;
+        created_at: number; boxlite_snapshot_id: string; size_bytes: number | null; container_disk_bytes: number | null; consistency_mode: 'live' | 'stopped';
       } | undefined;
 
     if (!row) return null;
@@ -77,6 +115,9 @@ export class SnapshotManager {
       label: row.label ?? undefined,
       createdAt: row.created_at,
       boxliteSnapshotId: row.boxlite_snapshot_id,
+      sizeBytes: row.size_bytes ?? undefined,
+      containerDiskBytes: row.container_disk_bytes ?? undefined,
+      consistencyMode: row.consistency_mode,
     };
   }
 

@@ -18,11 +18,13 @@ importers:
         specifier: ^4.1.0
         version: 4.1.0(@types/node@22.19.15)(jsdom@29.0.0)(vite@6.4.1(@types/node@22.19.15)(jiti@1.21.7)(tsx@4.21.0))
 
+  packages/amp-openclaw: {}
+
   packages/control-plane:
     dependencies:
       '@boxlite-ai/boxlite':
-        specifier: ^0.4.0
-        version: 0.4.0
+        specifier: ^0.4.3
+        version: 0.4.3
       '@fastify/websocket':
         specifier: ^11.0.0
         version: 11.2.0
@@ -242,20 +244,20 @@ packages:
     resolution: {integrity: sha512-LwdZHpScM4Qz8Xw2iKSzS+cfglZzJGvofQICy7W7v4caru4EaAmyUuO6BGrbyQ2mYV11W0U8j5mBhd14dd3B0A==}
     engines: {node: '>=6.9.0'}
 
-  '@boxlite-ai/boxlite-darwin-arm64@0.4.0':
-    resolution: {integrity: sha512-8EIEjIn3QYfv2nqxOUKPkpiPMDVkGeV8ckuiuHXimAgFtO6g2e0ByaXk8cAopv6ETtPs5x90dg0yob8XF/pZ1w==}
+  '@boxlite-ai/boxlite-darwin-arm64@0.4.3':
+    resolution: {integrity: sha512-1t9bNSPz8ql55lneojWe66vi4VbAJ6lYsVu8A1Hd3T3uug0HnXpQSvuEhGWrp2Ibavtxtr8MZ/KaW3EMPbyjXg==}
     engines: {node: '>=18.0.0'}
     cpu: [arm64]
     os: [darwin]
 
-  '@boxlite-ai/boxlite-linux-x64-gnu@0.4.0':
-    resolution: {integrity: sha512-sXVwQQCWCcAXkIwsFkOy7J5hOhzXalKUXZLXfcGNb2XzOS+avnbnpbG3P/Ge4jTJiDR+4M1AENfbNjhHgdteWQ==}
+  '@boxlite-ai/boxlite-linux-x64-gnu@0.4.3':
+    resolution: {integrity: sha512-e5Ukl2pyqFe046cA+VcDUL9iso1OseHS13BEDnr/ADKsG+P//bYZHnE0JZPJL1ai4+fHg6d6BOe113rOxba1eQ==}
     engines: {node: '>=18.0.0'}
     cpu: [x64]
     os: [linux]
 
-  '@boxlite-ai/boxlite@0.4.0':
-    resolution: {integrity: sha512-eW4VjtTGcnHYF3uK9058lC8F2VlrQtER7w2DtACttRALVTnn5K9BN8KLky5nwiEkEyk3QrhA3sp2TTEf8AoV8Q==}
+  '@boxlite-ai/boxlite@0.4.3':
+    resolution: {integrity: sha512-bCYSrJH8mAlz+JoyVkCUSfYuCp2IwqaLrvOu4m1vstq6LNwkLcpmJzs9gLXrHnYb+YitYko3pQiK8uTieG4BJw==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
       playwright-core: '>=1.58.0'
@@ -2060,16 +2062,16 @@ snapshots:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
 
-  '@boxlite-ai/boxlite-darwin-arm64@0.4.0':
+  '@boxlite-ai/boxlite-darwin-arm64@0.4.3':
     optional: true
 
-  '@boxlite-ai/boxlite-linux-x64-gnu@0.4.0':
+  '@boxlite-ai/boxlite-linux-x64-gnu@0.4.3':
     optional: true
 
-  '@boxlite-ai/boxlite@0.4.0':
+  '@boxlite-ai/boxlite@0.4.3':
     optionalDependencies:
-      '@boxlite-ai/boxlite-darwin-arm64': 0.4.0
-      '@boxlite-ai/boxlite-linux-x64-gnu': 0.4.0
+      '@boxlite-ai/boxlite-darwin-arm64': 0.4.3
+      '@boxlite-ai/boxlite-linux-x64-gnu': 0.4.3
 
   '@bramus/specificity@2.4.2':
     dependencies:
