@@ -318,9 +318,9 @@ export function LLMConfigPanel({ providers, onConfigured }: LLMConfigPanelProps)
         <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.16em] text-stone-500">Tip</div>
         <p className="mb-2 text-xs text-stone-500">You can also configure providers with environment variables:</p>
         <pre className="overflow-x-auto rounded-xl border border-stone-200 bg-stone-50 p-3 text-[10px] leading-5 text-stone-700">
-{`export ANTHROPIC_API_KEY="sk-ant-..."
-export OPENAI_API_KEY="sk-..."
-export OPENROUTER_API_KEY="sk-or-..."`}
+{`export ANTHROPIC_API_KEY="your-anthropic-key"
+export OPENAI_API_KEY="your-openai-key"
+export OPENROUTER_API_KEY="your-openrouter-key"`}
         </pre>
       </div>
     </div>
