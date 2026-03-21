@@ -61,6 +61,7 @@ tmp/
 temp/
 *.tmp
 *.bak
+artifacts/
 
 # Python caches
 __pycache__/
