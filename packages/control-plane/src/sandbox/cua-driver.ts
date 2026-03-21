@@ -20,6 +20,12 @@ export class CUADriver implements SandboxDriver {
   async copyOut(vmId: string, vmPath: string, hostPath: string): Promise<void> {
     throw new Error('CUADriver not yet implemented');
   }
+  async pauseBox(vmId: string): Promise<void> {
+    throw new Error('CUADriver not yet implemented');
+  }
+  async resumeBox(vmId: string): Promise<void> {
+    throw new Error('CUADriver not yet implemented');
+  }
   async createSnapshot(vmId: string, label?: string): Promise<SandboxSnapshot> {
     throw new Error('CUADriver not yet implemented');
   }

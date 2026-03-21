@@ -63,12 +63,14 @@ function jsonResponse(body: MockResponseBody, ok = true, status = ok ? 200 : 500
 describe('App browser journey', () => {
   const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<ReturnType<typeof jsonResponse>>>();
   let failStartRequest = false;
+  let historicalSess3Events: MockResponseBody = [];
 
   beforeEach(() => {
     cleanup();
     MockWebSocket.reset();
     fetchMock.mockReset();
     failStartRequest = false;
+    historicalSess3Events = [];
 
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
@@ -139,7 +141,10 @@ describe('App browser journey', () => {
           createdAt: 3,
         });
       }
-      if ((url === '/api/sessions/sess-1/events' || url === '/api/sessions/sess-2/events' || url === '/api/sessions/sess-3/events' || url === '/api/sessions/sess-new/events') && method === 'GET') {
+      if (url === '/api/sessions/sess-3/events' && method === 'GET') {
+        return jsonResponse(historicalSess3Events);
+      }
+      if ((url === '/api/sessions/sess-1/events' || url === '/api/sessions/sess-2/events' || url === '/api/sessions/sess-new/events') && method === 'GET') {
         return jsonResponse([]);
       }
       if ((url === '/api/sessions/sess-1/hitl/pending' || url === '/api/sessions/sess-2/hitl/pending' || url === '/api/sessions/sess-3/hitl/pending' || url === '/api/sessions/sess-new/hitl/pending') && method === 'GET') {
@@ -455,6 +460,65 @@ describe('App browser journey', () => {
     await user.click(screen.getByRole('button', { name: /Create sandbox/i }));
     const dialog = screen.getByRole('dialog', { name: /Create sandbox/i });
     expect(within(dialog).getByRole('button', { name: /^Create sandbox$/i })).not.toBeDisabled();
+  });
+
+  it('uses only the current start timeline when reopening a stopped session with old ready events', async () => {
+    historicalSess3Events = [
+      {
+        id: 'old-1',
+        sessionId: 'sess-3',
+        seq: 1,
+        timestamp: 1,
+        type: 'amp.session.start',
+        payload: { phase: 'sandbox_ready', message: 'Sandbox ready' },
+      },
+      {
+        id: 'old-2',
+        sessionId: 'sess-3',
+        seq: 2,
+        timestamp: 2,
+        type: 'amp.agent.ready',
+        payload: { agent: 'openclaw', version: 'old', capabilities: ['chat'] },
+      },
+    ];
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole('button', { name: /sess-3/i }));
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    expect(screen.getByText(/Setting up sandbox/i)).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/sessions/sess-3/start', expect.objectContaining({ method: 'POST' }));
+    });
+
+    const socket = MockWebSocket.instances.at(-1);
+    expect(socket).toBeTruthy();
+
+    await act(async () => {
+      socket!.emit({
+        id: 'new-1',
+        sessionId: 'sess-3',
+        seq: 3,
+        timestamp: Date.now() + 1000,
+        type: 'amp.session.start',
+        payload: { phase: 'vm.resume', message: 'Resuming existing VM...' },
+      });
+      socket!.emit({
+        id: 'new-2',
+        sessionId: 'sess-3',
+        seq: 4,
+        timestamp: Date.now() + 1001,
+        type: 'amp.session.start',
+        payload: { phase: 'sandbox_ready', message: 'Sandbox ready' },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Setting up sandbox/i)).not.toBeInTheDocument();
+    });
   });
 
   it('deletes a session only after confirmation from the sidebar x button', async () => {

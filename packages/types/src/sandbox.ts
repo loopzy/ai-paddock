@@ -42,6 +42,8 @@ export interface SandboxDriver {
   exec(vmId: string, command: string): Promise<ExecResult>;
   copyIn(vmId: string, hostPath: string, vmPath: string): Promise<void>;
   copyOut(vmId: string, vmPath: string, hostPath: string): Promise<void>;
+  pauseBox(vmId: string): Promise<void>;
+  resumeBox(vmId: string): Promise<void>;
   createSnapshot(vmId: string, label?: string): Promise<SandboxSnapshot>;
   restoreSnapshot(vmId: string, snapshotId: string): Promise<void>;
   destroyBox(vmId: string): Promise<void>;

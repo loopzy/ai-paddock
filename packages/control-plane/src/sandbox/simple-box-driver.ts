@@ -19,6 +19,35 @@ const SIMPLE_BOX_DEFAULT_DISK_SIZE_GB = 12;
  */
 export class SimpleBoxDriver implements SandboxDriver {
   private boxes = new Map<string, SimpleBox>();
+  private boxStates = new Map<string, VMInfo['status']>();
+
+  private async getOrAttachBox(vmId: string): Promise<SimpleBox> {
+    let box = this.boxes.get(vmId);
+    const attachedFromRuntime = Boolean(box);
+    if (!box) {
+      box = new SimpleBox({
+        ...getSimpleBoxImageSource(),
+        name: vmId,
+        autoRemove: false,
+        diskSizeGb: SIMPLE_BOX_DEFAULT_DISK_SIZE_GB,
+      });
+      this.boxes.set(vmId, box);
+    }
+    const snapshotBox = box as unknown as SnapshotCapableBox;
+    if (typeof snapshotBox._runtime?.get === 'function') {
+      const refreshed = await snapshotBox._runtime.get(vmId);
+      if (!refreshed) {
+        if (!attachedFromRuntime) {
+          this.boxes.delete(vmId);
+        }
+        throw new Error(`VM ${vmId} not found`);
+      }
+      snapshotBox._box = refreshed;
+    } else {
+      await refreshNativeBoxHandle(snapshotBox, vmId);
+    }
+    return box;
+  }
 
   private async createSnapshotWithMode(vmId: string, label: string | undefined, consistencyMode: 'live' | 'stopped'): Promise<SandboxSnapshot> {
     const box = this.boxes.get(vmId);
@@ -58,20 +87,27 @@ export class SimpleBoxDriver implements SandboxDriver {
     });
     const id = await box.getId();
     this.boxes.set(id, box);
+    this.boxStates.set(id, 'running');
     return id;
   }
 
   async getInfo(vmId: string): Promise<VMInfo | null> {
-    const box = this.boxes.get(vmId);
-    if (!box) return null;
-    await box.getInfo();
-    const id = await box.getId();
-    return { id, name: box.name ?? vmId, status: 'running', created: new Date() };
+    const knownStatus = this.boxStates.get(vmId);
+    try {
+      const box = await this.getOrAttachBox(vmId);
+      const info = await box.getInfo();
+      const rawStatus = info?.state?.status;
+      const status: VMInfo['status'] = rawStatus === 'running' ? 'running' : knownStatus ?? 'stopped';
+      this.boxStates.set(vmId, status);
+      return { id: vmId, name: box.name ?? vmId, status, created: new Date() };
+    } catch {
+      if (!knownStatus) return null;
+      return { id: vmId, name: vmId, status: knownStatus, created: new Date() };
+    }
   }
 
   async exec(vmId: string, command: string): Promise<ExecResult> {
-    const box = this.boxes.get(vmId);
-    if (!box) throw new Error(`VM ${vmId} not found`);
+    const box = await this.getOrAttachBox(vmId);
     try {
       const result = await box.exec('sh', '-c', command);
       return { stdout: result.stdout ?? '', stderr: result.stderr ?? '', exitCode: result.exitCode ?? 0 };
@@ -82,15 +118,29 @@ export class SimpleBoxDriver implements SandboxDriver {
   }
 
   async copyIn(vmId: string, hostPath: string, vmPath: string): Promise<void> {
-    const box = this.boxes.get(vmId);
-    if (!box) throw new Error(`VM ${vmId} not found`);
+    const box = await this.getOrAttachBox(vmId);
     await box.copyIn(resolve(hostPath), vmPath);
   }
 
   async copyOut(vmId: string, vmPath: string, hostPath: string): Promise<void> {
-    const box = this.boxes.get(vmId);
-    if (!box) throw new Error(`VM ${vmId} not found`);
+    const box = await this.getOrAttachBox(vmId);
     await box.copyOut(vmPath, resolve(hostPath));
+  }
+
+  async pauseBox(vmId: string): Promise<void> {
+    const box = await this.getOrAttachBox(vmId);
+    await box.stop();
+    this.boxStates.set(vmId, 'stopped');
+  }
+
+  async resumeBox(vmId: string): Promise<void> {
+    const box = await this.getOrAttachBox(vmId);
+    const nativeBox = await refreshNativeBoxHandle(box as unknown as SnapshotCapableBox, vmId);
+    if (typeof nativeBox.start !== 'function') {
+      throw new Error('Installed BoxLite package does not expose box.start()');
+    }
+    await nativeBox.start();
+    this.boxStates.set(vmId, 'running');
   }
 
   async createSnapshot(vmId: string, label?: string): Promise<SandboxSnapshot> {
@@ -130,16 +180,21 @@ export class SimpleBoxDriver implements SandboxDriver {
       } catch {
         // best effort cleanup for stale runtimes loaded outside this process
       }
+      this.boxStates.delete(vmId);
       return;
     }
-    await box.stop();
+    try {
+      await box.stop();
+    } catch {
+      // best effort stop; stopped handles may already be invalidated
+    }
     await removeBoxRuntime(box as unknown as SnapshotCapableBox, vmId);
     this.boxes.delete(vmId);
+    this.boxStates.delete(vmId);
   }
 
   async getMetrics(vmId: string): Promise<{ cpuPercent: number; memoryMiB: number }> {
-    const box = this.boxes.get(vmId);
-    if (!box) throw new Error(`VM ${vmId} not found`);
+    const box = await this.getOrAttachBox(vmId);
     const metrics = await box.metrics();
     return { cpuPercent: metrics.cpuPercent ?? 0, memoryMiB: metrics.memoryMiB ?? 0 };
   }

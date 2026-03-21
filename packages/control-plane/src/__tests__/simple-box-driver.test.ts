@@ -7,14 +7,17 @@ import { SIMPLE_BOX_ROOTFS_ENV } from '../sandbox/simple-box-rootfs.js';
 const constructorCalls: Array<Record<string, unknown>> = [];
 const snapshotCalls: Array<{ method: string; args: unknown[] }> = [];
 const runtimeRemoveCalls: Array<unknown[]> = [];
+const lifecycleCalls: Array<{ method: string; args: unknown[] }> = [];
 
 vi.mock('@boxlite-ai/boxlite', () => {
   class MockSimpleBox {
     name?: string;
     private nativeBox = {
       start: async () => {
+        lifecycleCalls.push({ method: 'native.start', args: [] });
         snapshotCalls.push({ method: 'native.start', args: [] });
       },
+      info: () => ({ state: { status: 'stopped' } }),
       snapshot: {
         create: async (name: string) => {
           snapshotCalls.push({ method: 'snapshot.create', args: [name] });
@@ -48,11 +51,11 @@ vi.mock('@boxlite-ai/boxlite', () => {
     }
 
     async getId() { return 'vm-simple-123'; }
-    async getInfo() { return { id: 'vm-simple-123' }; }
+    async getInfo() { return { id: 'vm-simple-123', state: { status: 'running' } }; }
     async exec() { return { stdout: '', stderr: '', exitCode: 0 }; }
     async copyIn() {}
     async copyOut() {}
-    async stop() {}
+    async stop() { lifecycleCalls.push({ method: 'box.stop', args: [] }); }
     async metrics() { return { cpuPercent: 0, memoryMiB: 0 }; }
   }
 
@@ -69,6 +72,7 @@ describe('SimpleBoxDriver', () => {
     constructorCalls.length = 0;
     snapshotCalls.length = 0;
     runtimeRemoveCalls.length = 0;
+    lifecycleCalls.length = 0;
   });
 
   afterEach(() => {
@@ -131,6 +135,22 @@ describe('SimpleBoxDriver', () => {
     expect(snapshotCalls).toEqual(
       expect.arrayContaining([
         { method: 'snapshot.restore', args: ['snap-restore-1'] },
+        { method: 'native.start', args: [] },
+      ]),
+    );
+  });
+
+  it('pauses a box and resumes it via a freshly attached native handle', async () => {
+    const { SimpleBoxDriver } = await import('../sandbox/simple-box-driver.js');
+    const driver = new SimpleBoxDriver();
+    const vmId = await driver.createBox({ sandboxType: 'simple-box' });
+
+    await driver.pauseBox(vmId);
+    await driver.resumeBox(vmId);
+
+    expect(lifecycleCalls).toEqual(
+      expect.arrayContaining([
+        { method: 'box.stop', args: [] },
         { method: 'native.start', args: [] },
       ]),
     );

@@ -264,11 +264,16 @@ export class SessionManager {
   async start(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session ${sessionId} not found`);
-    if (!['created', 'terminated', 'error'].includes(session.status)) {
+    if (!['created', 'terminated', 'error', 'paused'].includes(session.status)) {
       throw new Error(`Session ${sessionId} already started`);
     }
     const driver = this.getDriver(session.sandboxType);
     const boxName = `paddock-${sessionId}`;
+
+    if (session.status === 'paused' || (session.status === 'error' && session.vmId)) {
+      await this.resumePausedSession(session, driver);
+      return;
+    }
 
     try {
       await this.destroyResidualSandbox(driver, session, boxName);
@@ -310,6 +315,50 @@ export class SessionManager {
       session.updatedAt = Date.now();
       this.db.prepare('UPDATE sessions SET status = ?, vm_id = NULL, updated_at = ? WHERE id = ?').run(session.status, session.updatedAt, session.id);
       this.eventStore.append(sessionId, 'session.status', { status: 'error', error: `Failed to start sandbox: ${error.message}` });
+      throw err;
+    }
+  }
+
+  private async resumePausedSession(session: RuntimeSession, driver: SandboxDriver): Promise<void> {
+    if (!session.vmId) {
+      throw new Error(`Session ${session.id} has no paused VM to resume`);
+    }
+
+    const vmId = session.vmId;
+
+    try {
+      this.eventStore.append(session.id, 'amp.session.start', { phase: 'vm.resume', message: 'Resuming existing VM...' });
+      await driver.resumeBox(vmId);
+
+      session.status = 'running';
+      session.updatedAt = Date.now();
+
+      if (session.sandboxType === 'computer-box' && 'getGuiPorts' in driver) {
+        const ports = (driver as ComputerBoxDriver).getGuiPorts(vmId);
+        if (ports) session.guiPorts = ports;
+      }
+
+      this.db.prepare('UPDATE sessions SET status = ?, vm_id = ?, updated_at = ? WHERE id = ?').run(session.status, session.vmId, session.updatedAt, session.id);
+
+      this.eventStore.append(session.id, 'session.status', { status: 'running', vmId, resumed: true });
+      this.eventStore.append(session.id, 'amp.session.start', { phase: 'vm.ready', message: 'VM resumed successfully' });
+      this.eventStore.append(session.id, 'amp.session.start', { phase: 'sidecar', message: 'Deploying Sidecar...' });
+
+      await this.deploySidecar(driver, vmId, session.id);
+
+      this.eventStore.append(session.id, 'amp.session.start', { phase: 'env', message: 'Configuring environment...' });
+      await this.configureAgentEnv(driver, vmId, session.agentConfig);
+      this.eventStore.append(session.id, 'amp.session.start', { phase: 'sandbox_ready', message: 'Sandbox ready' });
+
+      if (session.agentTransport) {
+        await this.resumeAgentRuntime(session, driver, vmId);
+      }
+    } catch (err) {
+      const error = err as Error;
+      session.status = 'error';
+      session.updatedAt = Date.now();
+      this.db.prepare('UPDATE sessions SET status = ?, vm_id = ?, updated_at = ? WHERE id = ?').run(session.status, session.vmId, session.updatedAt, session.id);
+      this.eventStore.append(session.id, 'session.status', { status: 'error', error: `Failed to resume sandbox: ${error.message}`, vmId });
       throw err;
     }
   }
@@ -539,6 +588,150 @@ export class SessionManager {
       }
     } else {
       throw new Error(`Unknown agent type: ${agentType}`);
+    }
+
+    session.agentType = agentType;
+    session.updatedAt = Date.now();
+    this.db.prepare('UPDATE sessions SET agent_type = ?, updated_at = ? WHERE id = ?').run(session.agentType, session.updatedAt, session.id);
+  }
+
+  private async resumeAgentRuntime(session: RuntimeSession, driver: SandboxDriver, vmId: string): Promise<void> {
+    this.eventStore.append(session.id, 'amp.session.start', {
+      phase: 'agent.resume',
+      message: `Restarting ${session.agentType} in the resumed sandbox...`,
+    });
+
+    if (session.agentType !== 'openclaw') {
+      await this.deployAgent(session.id, session.agentType, session.agentConfig);
+      return;
+    }
+
+    if (session.agentTransport === 'openclaw-gateway') {
+      await this.resumeOpenClawGatewayRuntime(session, driver, vmId);
+      return;
+    }
+
+    if (session.agentTransport === 'amp-command-file') {
+      await this.resumeCompatOpenClawRuntime(session, driver, vmId);
+      return;
+    }
+
+    await this.deployAgent(session.id, session.agentType, session.agentConfig);
+  }
+
+  private async resumeOpenClawGatewayRuntime(
+    session: RuntimeSession,
+    driver: SandboxDriver,
+    vmId: string,
+  ): Promise<void> {
+    const resumedAt = Date.now();
+
+    try {
+      this.eventStore.append(session.id, 'amp.session.start', {
+        phase: 'agent.starting',
+        message: 'Restarting existing OpenClaw gateway runtime...',
+      });
+
+      await this.execOrThrow(
+        driver,
+        vmId,
+        'test -f /opt/paddock/openclaw/launch.sh && test -f /opt/paddock/openclaw-runtime/openclaw.mjs && test -f /workspace/.openclaw/openclaw.json',
+        'Existing OpenClaw runtime is missing from the resumed sandbox',
+      );
+      await this.execOrThrow(
+        driver,
+        vmId,
+        'set -a && . /etc/environment && set +a && OPENCLAW_STATE_DIR=/workspace/.openclaw OPENCLAW_CONFIG_PATH=/workspace/.openclaw/openclaw.json OPENCLAW_GATEWAY_PORT=18789 OPENCLAW_SKIP_CHANNELS=1 OPENCLAW_BUNDLED_PLUGINS_DIR=/opt/paddock/openclaw/paddock-amp-plugin NO_PROXY=127.0.0.1,localhost /opt/paddock/openclaw/launch.sh',
+        'Failed to relaunch existing OpenClaw runtime',
+      );
+
+      await new Promise(r => setTimeout(r, Number(process.env.PADDOCK_AGENT_BOOT_DELAY_MS ?? 3000)));
+
+      this.eventStore.append(session.id, 'amp.session.start', {
+        phase: 'agent.verify',
+        message: 'Waiting for the existing OpenClaw gateway to accept commands...',
+      });
+      await this.execOrThrow(driver, vmId, 'test -s /var/run/openclaw.pid && kill -0 "$(cat /var/run/openclaw.pid)"', 'OpenClaw process exited during resume');
+      await this.waitForExecSuccess(
+        driver,
+        vmId,
+        'OPENCLAW_STATE_DIR=/workspace/.openclaw OPENCLAW_CONFIG_PATH=/workspace/.openclaw/openclaw.json OPENCLAW_GATEWAY_PORT=18789 NO_PROXY=127.0.0.1,localhost node /opt/paddock/openclaw-runtime/openclaw.mjs gateway health --json --port 18789 >/tmp/paddock-openclaw-health.json',
+        'OpenClaw gateway is not responding after resume',
+        Number(process.env.PADDOCK_OPENCLAW_GATEWAY_READY_TIMEOUT_MS ?? 90000),
+        Number(process.env.PADDOCK_OPENCLAW_GATEWAY_READY_INTERVAL_MS ?? 2000),
+      );
+
+      this.eventStore.append(session.id, 'amp.agent.ready', {
+        agent: 'openclaw',
+        version: 'resumed',
+        capabilities: ['chat', 'gateway'],
+        transport: session.agentTransport,
+        resumed: true,
+      });
+      this.eventStore.append(session.id, 'amp.session.start', { phase: 'agent_ready', message: 'OpenClaw resumed inside the existing sandbox' });
+    } catch (err) {
+      const error = err as Error;
+      const logs = await this.tailLog(driver, vmId, '/var/log/openclaw.log');
+      const message = logs ? `${error.message}. OpenClaw logs: ${logs}` : error.message;
+      this.eventStore.append(session.id, 'amp.agent.fatal', {
+        agent: 'openclaw',
+        code: 'ERR_AGENT_RESUME',
+        message,
+        stage: 'agent.resume',
+        resumedAt,
+      });
+      throw new Error(message);
+    }
+  }
+
+  private async resumeCompatOpenClawRuntime(
+    session: RuntimeSession,
+    driver: SandboxDriver,
+    vmId: string,
+  ): Promise<void> {
+    const resumedAt = Date.now();
+
+    try {
+      this.eventStore.append(session.id, 'amp.session.start', {
+        phase: 'agent.starting',
+        message: 'Restarting existing OpenClaw compatibility agent...',
+      });
+      await this.execOrThrow(
+        driver,
+        vmId,
+        'test -d /opt/paddock/amp-openclaw',
+        'Existing OpenClaw compatibility agent is missing from the resumed sandbox',
+      );
+
+      const browserHeadless = this.isBrowserHeadless(session.sandboxType) ? '1' : '0';
+      await this.execOrThrow(
+        driver,
+        vmId,
+        `set -a && . /etc/environment && set +a && NO_PROXY=127.0.0.1,localhost PLAYWRIGHT_BROWSERS_PATH=/opt/paddock/ms-playwright PADDOCK_SIDECAR_URL=http://127.0.0.1:8801 PADDOCK_BROWSER_ENABLED=1 PADDOCK_BROWSER_HEADLESS=${browserHeadless} PADDOCK_BROWSER_DEFAULT_TIMEOUT_MS=15000 PADDOCK_BROWSER_OUTPUT_DIR=/workspace/.paddock/browser PYTHONPATH=/opt/paddock/amp-openclaw nohup python3 -m paddock_amp.builtin_agent > /var/log/openclaw.log 2>&1 & echo $! > /var/run/openclaw.pid`,
+        'Failed to relaunch existing OpenClaw compatibility agent',
+      );
+
+      await new Promise(r => setTimeout(r, Number(process.env.PADDOCK_AGENT_BOOT_DELAY_MS ?? 3000)));
+
+      this.eventStore.append(session.id, 'amp.session.start', {
+        phase: 'agent.verify',
+        message: 'Waiting for the existing OpenClaw compatibility agent to report AMP readiness...',
+      });
+      await this.execOrThrow(driver, vmId, 'test -s /var/run/openclaw.pid && kill -0 "$(cat /var/run/openclaw.pid)"', 'OpenClaw process exited during resume');
+      await this.waitForAgentReady(session.id, resumedAt);
+      this.eventStore.append(session.id, 'amp.session.start', { phase: 'agent_ready', message: 'OpenClaw resumed inside the existing sandbox' });
+    } catch (err) {
+      const error = err as Error;
+      const logs = await this.tailLog(driver, vmId, '/var/log/openclaw.log');
+      const message = logs ? `${error.message}. OpenClaw logs: ${logs}` : error.message;
+      this.eventStore.append(session.id, 'amp.agent.fatal', {
+        agent: 'openclaw',
+        code: 'ERR_AGENT_RESUME',
+        message,
+        stage: 'agent.resume',
+        resumedAt,
+      });
+      throw new Error(message);
     }
   }
 
@@ -960,18 +1153,16 @@ export class SessionManager {
   async stop(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session ${sessionId} not found`);
-    if (session.vmId) {
-      const driver = this.getDriver(session.sandboxType);
-      await driver.destroyBox(session.vmId);
-    }
-    session.vmId = undefined;
-    session.guiPorts = undefined;
-    session.agentTransport = undefined;
-    session.agentSessionKey = undefined;
-    session.status = 'terminated';
+    if (!session.vmId) throw new Error(`Session ${sessionId} has no running VM`);
+    if (session.status === 'paused') return;
+
+    const driver = this.getDriver(session.sandboxType);
+    await driver.pauseBox(session.vmId);
+
+    session.status = 'paused';
     session.updatedAt = Date.now();
-    this.db.prepare('UPDATE sessions SET status = ?, vm_id = NULL, updated_at = ? WHERE id = ?').run(session.status, session.updatedAt, session.id);
-    this.eventStore.append(session.id, 'session.status', { status: 'terminated' });
+    this.db.prepare('UPDATE sessions SET status = ?, vm_id = ?, updated_at = ? WHERE id = ?').run(session.status, session.vmId, session.updatedAt, session.id);
+    this.eventStore.append(session.id, 'session.status', { status: 'paused', vmId: session.vmId });
   }
 
   getDriverForSession(sessionId: string): SandboxDriver {
@@ -1003,7 +1194,7 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
 
-    if (session.vmId && session.status === 'running') {
+    if (session.vmId) {
       try {
         const driver = this.getDriver(session.sandboxType);
         await driver.destroyBox(session.vmId);
@@ -1090,7 +1281,8 @@ export class SessionManager {
     try {
       const driver = this.getDriver(session.sandboxType);
       const info = await driver.getInfo(session.vmId);
-      if (info?.status === 'running') return;
+      if (session.status === 'running' && info?.status === 'running') return;
+      if (session.status === 'paused' && info) return;
     } catch {
       // If the driver cannot see the VM anymore, surface that truth in the UI.
     }
@@ -1148,8 +1340,10 @@ export class SessionManager {
       .slice(0, 1000);
   }
 
-  private async waitForAgentReady(sessionId: string): Promise<PaddockEvent> {
-    const existing = this.eventStore.getEvents(sessionId, { types: ['amp.agent.ready'] });
+  private async waitForAgentReady(sessionId: string, sinceTimestamp = 0): Promise<PaddockEvent> {
+    const existing = this.eventStore
+      .getEvents(sessionId, { types: ['amp.agent.ready'] })
+      .filter((event) => event.timestamp >= sinceTimestamp);
     if (existing.length > 0) return existing[existing.length - 1];
 
     const timeoutMs = Number(process.env.PADDOCK_AGENT_READY_TIMEOUT_MS ?? 15000);
@@ -1162,6 +1356,7 @@ export class SessionManager {
 
       const listener = (event: PaddockEvent) => {
         if (event.sessionId !== sessionId) return;
+        if (event.timestamp < sinceTimestamp) return;
         if (event.type === 'amp.agent.ready') {
           cleanup(timer, listener);
           resolve(event);

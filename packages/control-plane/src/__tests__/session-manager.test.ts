@@ -7,17 +7,27 @@ import { SessionManager } from '../session/session-manager.js';
 import type { SandboxDriver, ExecResult, VMInfo, SandboxSnapshot, SandboxConfig } from '@paddock/types';
 
 /** Minimal mock SandboxDriver that records calls */
-function createMockDriver(): SandboxDriver & { calls: Array<{ method: string; args: unknown[] }> } {
+function createMockDriver(): SandboxDriver & {
+  calls: Array<{ method: string; args: unknown[] }>;
+  setVmStatus: (vmId: string, status: 'running' | 'stopped') => void;
+} {
   const calls: Array<{ method: string; args: unknown[] }> = [];
+  const vmStates = new Map<string, 'running' | 'stopped'>();
   return {
     calls,
+    setVmStatus(vmId: string, status: 'running' | 'stopped') {
+      vmStates.set(vmId, status);
+    },
     async createBox(config?: SandboxConfig) {
       calls.push({ method: 'createBox', args: [config] });
+      vmStates.set('vm-mock-123', 'running');
       return 'vm-mock-123';
     },
     async getInfo(vmId: string): Promise<VMInfo | null> {
       calls.push({ method: 'getInfo', args: [vmId] });
-      return { id: vmId, name: 'mock', status: 'running', created: new Date() };
+      const status = vmStates.get(vmId);
+      if (!status) return null;
+      return { id: vmId, name: 'mock', status, created: new Date() };
     },
     async exec(vmId: string, command: string): Promise<ExecResult> {
       calls.push({ method: 'exec', args: [vmId, command] });
@@ -35,6 +45,14 @@ function createMockDriver(): SandboxDriver & { calls: Array<{ method: string; ar
     async copyOut(vmId: string, vmPath: string, hostPath: string) {
       calls.push({ method: 'copyOut', args: [vmId, vmPath, hostPath] });
     },
+    async pauseBox(vmId: string) {
+      calls.push({ method: 'pauseBox', args: [vmId] });
+      vmStates.set(vmId, 'stopped');
+    },
+    async resumeBox(vmId: string) {
+      calls.push({ method: 'resumeBox', args: [vmId] });
+      vmStates.set(vmId, 'running');
+    },
     async createSnapshot(vmId: string, label?: string): Promise<SandboxSnapshot> {
       calls.push({ method: 'createSnapshot', args: [vmId, label] });
       return { id: 'snap-1', sessionId: vmId, seq: 0, label, createdAt: Date.now(), boxliteSnapshotId: 'bx-snap-1' };
@@ -44,6 +62,7 @@ function createMockDriver(): SandboxDriver & { calls: Array<{ method: string; ar
     },
     async destroyBox(vmId: string) {
       calls.push({ method: 'destroyBox', args: [vmId] });
+      vmStates.delete(vmId);
     },
     async getMetrics(vmId: string) {
       calls.push({ method: 'getMetrics', args: [vmId] });
@@ -345,14 +364,18 @@ describe('SessionManager', () => {
   });
 
   describe('stop', () => {
-    it('should stop a running session', async () => {
+    it('should pause a running session without destroying its VM', async () => {
       const session = await manager.create('openclaw');
       await manager.start(session.id);
+      const originalVmId = manager.get(session.id)?.vmId;
+      const destroyCallsBeforeStop = driver.calls.filter((call) => call.method === 'destroyBox').length;
       await manager.stop(session.id);
 
       const updated = manager.get(session.id);
-      expect(updated?.status).toBe('terminated');
-      expect(driver.calls.some(c => c.method === 'destroyBox')).toBe(true);
+      expect(updated?.status).toBe('paused');
+      expect(updated?.vmId).toBe(originalVmId);
+      expect(driver.calls.some(c => c.method === 'pauseBox' && c.args[0] === originalVmId)).toBe(true);
+      expect(driver.calls.filter((call) => call.method === 'destroyBox')).toHaveLength(destroyCallsBeforeStop);
     });
 
     it('should throw if session not found', async () => {
@@ -474,6 +497,50 @@ describe('SessionManager', () => {
       expect(manager.get(session.id)?.agentTransport).toBe('openclaw-gateway');
       expect(manager.get(session.id)?.agentSessionKey).toBe(`paddock:${session.id}`);
       expect(eventStore.getEvents(session.id).some((event) => event.type === 'amp.agent.ready')).toBe(true);
+    });
+
+    it('should resume an existing official OpenClaw install without reinstalling it', async () => {
+      process.env.PADDOCK_OPENCLAW_DEPLOYMENT_MODE = 'official-script';
+      process.env.OPENROUTER_API_KEY = 'or-test';
+
+      const session = await manager.create('openclaw');
+      await manager.start(session.id);
+      await manager.deployAgent(session.id, 'openclaw');
+
+      const runtimeCopiesBeforeResume = driver.calls.filter(
+        (call) =>
+          call.method === 'copyIn' &&
+          (String(call.args[1]).endsWith('/dist/deployers/openclaw') ||
+            String(call.args[1]).endsWith('/dist/openclaw-runtime.tar.gz') ||
+            String(call.args[1]).includes('/dist/openclaw-runtime/')),
+      ).length;
+      const installCallsBeforeResume = driver.calls.filter(
+        (call) => call.method === 'exec' && String(call.args[1]).includes('/opt/paddock/openclaw/install.sh'),
+      ).length;
+
+      await manager.stop(session.id);
+      await manager.start(session.id);
+
+      const runtimeCopiesAfterResume = driver.calls.filter(
+        (call) =>
+          call.method === 'copyIn' &&
+          (String(call.args[1]).endsWith('/dist/deployers/openclaw') ||
+            String(call.args[1]).endsWith('/dist/openclaw-runtime.tar.gz') ||
+            String(call.args[1]).includes('/dist/openclaw-runtime/')),
+      ).length;
+      const installCallsAfterResume = driver.calls.filter(
+        (call) => call.method === 'exec' && String(call.args[1]).includes('/opt/paddock/openclaw/install.sh'),
+      ).length;
+      const relaunchCalls = driver.calls.filter(
+        (call) =>
+          call.method === 'exec' &&
+          String(call.args[1]).includes('/opt/paddock/openclaw/launch.sh'),
+      );
+
+      expect(runtimeCopiesAfterResume).toBe(runtimeCopiesBeforeResume);
+      expect(installCallsAfterResume).toBe(installCallsBeforeResume);
+      expect(relaunchCalls.length).toBeGreaterThanOrEqual(2);
+      expect(eventStore.getEvents(session.id).some((event) => event.type === 'amp.agent.ready' && (event.payload as any).resumed === true)).toBe(true);
     });
 
     it('should support the vm-source deployment mode for OpenClaw', async () => {
@@ -879,6 +946,7 @@ describe('SessionManager', () => {
         freshRuntime.status = 'running';
         freshRuntime.vmId = 'vm-fresh';
       }
+      driver.setVmStatus('vm-fresh', 'running');
       eventStore.db
         .prepare('UPDATE sessions SET status = ?, vm_id = ?, updated_at = ? WHERE id = ?')
         .run('running', 'vm-fresh', Date.now(), fresh.id);
@@ -888,16 +956,36 @@ describe('SessionManager', () => {
       expect(pending?.displayStatus).toBe('starting');
     });
 
-    it('should allow restarting a stopped session', async () => {
+    it('should resume a paused session without creating a new VM', async () => {
       const session = await manager.create('openclaw');
 
       await manager.start(session.id);
+      const originalVmId = manager.get(session.id)?.vmId;
       await manager.stop(session.id);
       await manager.start(session.id);
 
       const restarted = manager.get(session.id);
       expect(restarted?.status).toBe('running');
-      expect(restarted?.vmId).toBeTruthy();
+      expect(restarted?.vmId).toBe(originalVmId);
+      expect(driver.calls.some((call) => call.method === 'resumeBox' && call.args[0] === originalVmId)).toBe(true);
+      expect(driver.calls.filter((call) => call.method === 'createBox')).toHaveLength(1);
+    });
+
+    it('should keep paused sessions as stopped instead of reconciling them to terminated', async () => {
+      const session = await manager.create('openclaw');
+      await manager.start(session.id);
+      await manager.stop(session.id);
+
+      const sessions = await manager.listWithRuntimeStatus();
+      const paused = sessions.find((entry) => entry.id === session.id);
+
+      expect(paused?.status).toBe('paused');
+      expect(paused?.displayStatus).toBe('stopped');
+      expect(
+        eventStore.getEvents(session.id).some(
+          (event) => event.type === 'session.status' && (event.payload as any).reason === 'runtime_unavailable',
+        ),
+      ).toBe(false);
     });
 
     it('should remove a session and its persisted history', async () => {

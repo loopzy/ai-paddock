@@ -608,6 +608,7 @@ export function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [draftSandboxType, setDraftSandboxType] = useState<SandboxType>('simple-box');
   const [deploying, setDeploying] = useState(false);
+  const [setupStartedAt, setSetupStartedAt] = useState<number | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionLabels, setSessionLabels] = useState<Record<string, string>>(() => loadSessionLabels());
   const [healthWarnings, setHealthWarnings] = useState<HealthWarning[]>([]);
@@ -716,6 +717,7 @@ export function App() {
 
   const createSession = async () => {
     setDeploying(true);
+    setSetupStartedAt(Date.now());
     setCreateError(null);
     try {
       const res = await fetch('/api/sessions', {
@@ -738,23 +740,35 @@ export function App() {
     } catch (err) {
       setCreateError((err as Error).message);
       setDeploying(false);
+      setSetupStartedAt(null);
     }
   };
 
   const sandboxReady = isSandboxReady(events);
   const hasError = hasSessionError(events);
+  const currentSetupEvents = setupStartedAt == null
+    ? events
+    : events.filter((event) => (event.timestamp ?? 0) >= setupStartedAt);
+  const currentSetupReady = isSandboxReady(currentSetupEvents);
+  const currentSetupHasError = hasSessionError(currentSetupEvents);
   const agentReady = isAgentReady(events);
   const commandState = getCommandInputState(events);
   const commandRuns = buildCommandRuns(events);
   const activeCommand = commandRuns.find((run) => run.active && run.stopTargetRunId);
   const selectedSession = sessions.find((session) => session.id === sessionId) ?? null;
-  useEffect(() => { if (sandboxReady || hasError) setDeploying(false); }, [sandboxReady, hasError]);
+  useEffect(() => {
+    if (!deploying) return;
+    if (!currentSetupReady && !currentSetupHasError) return;
+    setDeploying(false);
+    setSetupStartedAt(null);
+  }, [deploying, currentSetupReady, currentSetupHasError]);
 
   const stopSession = async () => {
     if (!sessionId) return;
     await fetch(`/api/sessions/${sessionId}/stop`, { method: 'POST' });
     setAbortingRunId(null);
     setDeploying(false);
+    setSetupStartedAt(null);
     refreshSessions();
   };
 
@@ -762,6 +776,7 @@ export function App() {
     if (!sessionId) return;
     setCreateError(null);
     setDeploying(true);
+    setSetupStartedAt(Date.now());
     try {
       const res = await fetch(`/api/sessions/${sessionId}/start`, { method: 'POST' });
       if (!res.ok) {
@@ -771,6 +786,7 @@ export function App() {
     } catch (err) {
       console.error(err);
       setDeploying(false);
+      setSetupStartedAt(null);
       refreshSessions();
     }
   };
@@ -800,6 +816,7 @@ export function App() {
   const openSession = (session: SessionSummary) => {
     setSessionId(session.id);
     setDeploying(false);
+    setSetupStartedAt(null);
     setCreateError(null);
     setDraftSandboxType(session.sandboxType as SandboxType);
     setActiveTab('commands');
@@ -821,6 +838,7 @@ export function App() {
       setSessionId(null);
       setAbortingRunId(null);
       setDeploying(false);
+      setSetupStartedAt(null);
     }
     refreshSessions();
   };
@@ -928,7 +946,7 @@ export function App() {
             <div className="flex-1 flex items-center justify-center">
               <div className="space-y-4 w-[32rem] max-w-full px-6">
                 <h2 className="text-sm font-semibold text-stone-500">Setting up sandbox...</h2>
-                <DeployPipeline events={events} />
+                <DeployPipeline events={currentSetupEvents} />
               </div>
             </div>
           ) : sessionId ? (
