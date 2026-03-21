@@ -292,6 +292,7 @@ export class LLMProxy {
       durationMs,
       streamed: summary.streamed,
       chunkCount: summary.chunkCount,
+      responseText: extractResponseText(summary.content),
       responsePreview: extractResponsePreview(summary.content),
     });
 
@@ -804,7 +805,7 @@ function extractMessagesPreview(body: string): Array<{ role: string; text: strin
   }
 }
 
-function extractResponsePreview(content: unknown[]): string {
+function collectResponseTextParts(content: unknown[]): { parts: string[]; reasoning: string } {
   const parts: string[] = [];
   const textBuffer: string[] = [];
   const reasoningBuffer: string[] = [];
@@ -844,12 +845,20 @@ function extractResponsePreview(content: unknown[]): string {
   }
 
   flushTextBuffer();
-
-  const preview = parts.join('\n').trim();
-  if (preview) {
-    return truncatePreview(preview, 400);
-  }
-
   const reasoningPreview = mergeTextFragments(reasoningBuffer).trim();
-  return reasoningPreview ? truncatePreview(`[reasoning] ${reasoningPreview}`, 400) : '';
+  return { parts, reasoning: reasoningPreview };
+}
+
+function extractResponseText(content: unknown[]): string {
+  const { parts, reasoning } = collectResponseTextParts(content);
+  const text = parts.join('\n').trim();
+  if (text) {
+    return text;
+  }
+  return reasoning ? `[reasoning] ${reasoning}` : '';
+}
+
+function extractResponsePreview(content: unknown[]): string {
+  const text = extractResponseText(content);
+  return text ? truncatePreview(text, 400) : '';
 }

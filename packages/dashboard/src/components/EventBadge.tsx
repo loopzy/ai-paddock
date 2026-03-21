@@ -1,17 +1,17 @@
 // Event type → colored badge mapping
 const badgeConfig: Record<string, { label: string; bg: string; text: string }> = {
-  'amp.llm.request': { label: 'LLM', bg: 'bg-sky-100', text: 'text-sky-700' },
-  'amp.llm.response': { label: 'LLM', bg: 'bg-sky-100', text: 'text-sky-700' },
-  'amp.thought': { label: 'LLM', bg: 'bg-sky-100', text: 'text-sky-700' },
+  'amp.llm.request': { label: 'Model', bg: 'bg-sky-100', text: 'text-sky-700' },
+  'amp.llm.response': { label: 'Model', bg: 'bg-sky-100', text: 'text-sky-700' },
+  'amp.thought': { label: 'Thinking', bg: 'bg-sky-100', text: 'text-sky-700' },
   'amp.trace': { label: 'System', bg: 'bg-stone-200', text: 'text-stone-700' },
   'amp.tool.intent': { label: 'Tool', bg: 'bg-violet-100', text: 'text-violet-700' },
   'amp.tool.result': { label: 'Tool', bg: 'bg-violet-100', text: 'text-violet-700' },
-  'amp.gate.verdict': { label: 'Security', bg: 'bg-amber-100', text: 'text-amber-700' },
+  'amp.gate.verdict': { label: 'Safety', bg: 'bg-amber-100', text: 'text-amber-700' },
   'amp.agent.ready': { label: 'Agent', bg: 'bg-emerald-100', text: 'text-emerald-700' },
-  'amp.agent.message': { label: 'Agent', bg: 'bg-emerald-100', text: 'text-emerald-700' },
+  'amp.agent.message': { label: 'Answer', bg: 'bg-emerald-100', text: 'text-emerald-700' },
   'amp.agent.heartbeat': { label: 'Agent', bg: 'bg-emerald-100', text: 'text-emerald-700' },
-  'amp.agent.error': { label: 'Error', bg: 'bg-rose-100', text: 'text-rose-700' },
-  'amp.agent.fatal': { label: 'Error', bg: 'bg-rose-100', text: 'text-rose-700' },
+  'amp.agent.error': { label: 'Issue', bg: 'bg-rose-100', text: 'text-rose-700' },
+  'amp.agent.fatal': { label: 'Issue', bg: 'bg-rose-100', text: 'text-rose-700' },
   'amp.agent.exit': { label: 'Agent', bg: 'bg-emerald-100', text: 'text-emerald-700' },
   'amp.fs.change': { label: 'System', bg: 'bg-stone-200', text: 'text-stone-700' },
   'amp.net.egress': { label: 'System', bg: 'bg-stone-200', text: 'text-stone-700' },
@@ -22,8 +22,33 @@ const badgeConfig: Record<string, { label: string; bg: string; text: string }> =
   'amp.snapshot.restored': { label: 'System', bg: 'bg-stone-200', text: 'text-stone-700' },
   'amp.hitl.request': { label: 'Security', bg: 'bg-amber-100', text: 'text-amber-700' },
   'amp.hitl.decision': { label: 'Security', bg: 'bg-amber-100', text: 'text-amber-700' },
-  'amp.user.command': { label: 'System', bg: 'bg-stone-200', text: 'text-stone-700' },
-  'amp.command.status': { label: 'Command', bg: 'bg-indigo-100', text: 'text-indigo-700' },
+  'amp.user.command': { label: 'Request', bg: 'bg-stone-200', text: 'text-stone-700' },
+  'amp.command.status': { label: 'Run', bg: 'bg-indigo-100', text: 'text-indigo-700' },
+};
+
+const eventDisplayNames: Record<string, string> = {
+  'user.command': 'Your request',
+  'amp.user.command': 'Request accepted',
+  'amp.command.status': 'Run status',
+  'llm.request': 'Model request',
+  'amp.llm.request': 'Model request',
+  'llm.response': 'Model response',
+  'amp.llm.response': 'Model response',
+  'amp.thought': 'Model reasoning',
+  'amp.tool.intent': 'Tool started',
+  'amp.tool.result': 'Tool finished',
+  'amp.gate.verdict': 'Safety check',
+  'amp.agent.ready': 'Agent ready',
+  'amp.agent.message': 'Answer ready',
+  'amp.agent.error': 'Agent issue',
+  'amp.agent.fatal': 'Agent stopped',
+  'amp.agent.exit': 'Agent exited',
+  'amp.session.start': 'Setup progress',
+  'amp.session.end': 'Session ended',
+  'amp.snapshot.created': 'Checkpoint created',
+  'amp.snapshot.restored': 'Checkpoint restored',
+  'amp.hitl.request': 'Approval requested',
+  'amp.hitl.decision': 'Approval decided',
 };
 
 export function EventBadge({ type }: { type: string }) {
@@ -33,6 +58,10 @@ export function EventBadge({ type }: { type: string }) {
       {config.label}
     </span>
   );
+}
+
+export function getEventDisplayName(type: string): string {
+  return eventDisplayNames[type] ?? type;
 }
 
 export type EventCategory = 'All' | 'LLM' | 'Tools' | 'Security' | 'Agent' | 'System';

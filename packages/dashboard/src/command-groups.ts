@@ -521,6 +521,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
       });
     const responseText =
       getString(lastAgentReply?.payload.text) ??
+      getString(lastTerminalLlmResponse?.payload.responseText) ??
       getString(lastTerminalLlmResponse?.payload.responsePreview) ??
       undefined;
 
@@ -593,7 +594,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
             promptPreview,
             undefined,
             appendRawSection(undefined, 'Request payload', payload),
-            'Turn payload',
+            'Request details',
             'running',
           );
           steps.push(step);
@@ -603,16 +604,18 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
         }
         case 'llm.response':
         case 'amp.llm.response': {
+          const fullResponseText = getString(payload.responseText);
           const preview = getString(payload.responsePreview);
+          const displayText = fullResponseText ?? preview;
           const metrics = formatTokenMeta(payload);
-          const previewBody = preview && !isStructuredText(preview) ? preview.trim() : undefined;
+          const previewBody = displayText && !isStructuredText(displayText) ? displayText.trim() : undefined;
           if (currentLLMStep) {
             currentLLMStep.meta = joinMetaParts(currentLLMStep.meta, metrics);
             currentLLMStep.summary = previewBody ? undefined : summarizeLLMResponse(payload);
             currentLLMStep.detail = undefined;
             currentLLMStep.body = previewBody ?? currentLLMStep.body;
             currentLLMStep.rawDetail = appendRawSection(currentLLMStep.rawDetail, 'Response payload', payload);
-            currentLLMStep.rawLabel = joinMetaParts('Turn payload', metrics);
+            currentLLMStep.rawLabel = joinMetaParts('Step details', metrics);
             currentLLMStep.status = looksLikeToolCallPreview(previewBody ?? '') ? 'running' : 'completed';
           } else {
             const fallback = createStep(
@@ -625,7 +628,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
               undefined,
               previewBody,
               appendRawSection(undefined, 'Response payload', payload),
-              joinMetaParts('Turn payload', metrics),
+              joinMetaParts('Step details', metrics),
               looksLikeToolCallPreview(previewBody ?? '') ? 'running' : 'completed',
             );
             steps.push(fallback);
@@ -649,7 +652,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
             formatToolInputDetail(toolInput),
             undefined,
             appendRawSection(undefined, 'Intent payload', payload),
-            'Tool payload',
+            'Tool details',
             'running',
           );
           addChildStep(currentLLMStep, step, steps);
@@ -708,7 +711,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
               formatToolResultDetail(payload),
               pickHumanBody(textResult),
               appendRawSection(undefined, 'Result payload', payload.result ?? payload),
-              'Tool payload',
+              'Tool details',
               getString(payload.error) ? 'failed' : 'completed',
             );
             steps.push(step);
@@ -721,14 +724,14 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
           const step = createStep(
             event,
             'agent-message',
-            'Final answer',
+            'Answer',
             undefined,
             [],
             truncateText(text, 180),
             undefined,
             text,
-            appendRawSection(undefined, 'Reply payload', payload),
-            'Reply payload',
+            appendRawSection(undefined, 'Answer details', payload),
+            'Answer details',
             'completed',
           );
           steps.push(step);
@@ -740,7 +743,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
         case 'amp.agent.fatal': {
           const message = getString(payload.message) ?? 'Unknown error';
           const tags: CommandTag[] = [
-            { label: event.type === 'amp.agent.fatal' ? 'Fatal' : 'Error', tone: event.type === 'amp.agent.fatal' ? 'danger' : 'warning' },
+            { label: event.type === 'amp.agent.fatal' ? 'Stopped' : 'Issue', tone: event.type === 'amp.agent.fatal' ? 'danger' : 'warning' },
           ];
           const category = getString(payload.category);
           if (category) {
@@ -749,14 +752,14 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
           const step = createStep(
             event,
             'agent-error',
-            event.type === 'amp.agent.fatal' ? 'Fatal error' : 'Agent error',
+            event.type === 'amp.agent.fatal' ? 'Agent stopped' : 'Agent issue',
             undefined,
             tags,
             truncateText(message, 180),
             undefined,
             message,
-            appendRawSection(undefined, 'Error payload', payload),
-            'Error payload',
+            appendRawSection(undefined, 'Issue details', payload),
+            'Issue details',
             'failed',
           );
           steps.push(step);
@@ -776,8 +779,8 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
             getString(payload.command),
             undefined,
             undefined,
-            appendRawSection(undefined, 'Status payload', payload),
-            'Status payload',
+            appendRawSection(undefined, 'Run details', payload),
+            'Run details',
             statusLabel === 'aborted' ? 'blocked' : 'completed',
           );
           steps.push(step);

@@ -402,7 +402,7 @@ describe('App browser journey', () => {
     expect(screen.getAllByText('虎扑首页已经打开。').length).toBeGreaterThan(0);
     expect(screen.queryByText(/"toolName":/)).not.toBeInTheDocument();
 
-    expect((await screen.findAllByText(/Execution tree/i)).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(/What happened/i)).length).toBeGreaterThan(0);
     expect(screen.getByText('moonshotai/kimi-k2')).toBeInTheDocument();
     expect(screen.getByText('openrouter')).toBeInTheDocument();
     expect(screen.getAllByText(/先帮我看看虎扑首页/).length).toBeGreaterThan(0);
@@ -410,7 +410,7 @@ describe('App browser journey', () => {
 
     await user.click(screen.getByRole('button', { name: 'Raw Logs' }));
     await waitFor(() => {
-      expect(screen.getAllByText('amp.tool.intent').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('Tool started').length).toBeGreaterThan(0);
     });
 
     await user.click(screen.getByRole('button', { name: 'Commands' }));

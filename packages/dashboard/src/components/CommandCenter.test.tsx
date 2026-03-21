@@ -118,10 +118,10 @@ describe('CommandCenter', () => {
     expect(screen.queryByText(/"toolName":/)).not.toBeInTheDocument();
   });
 
-  it('shows an expandable execution tree with llm and tool details', async () => {
+  it('shows an expandable activity view with model and tool details', async () => {
     render(<CommandCenter events={sampleEvents} onAbortCommand={vi.fn()} abortingRunId={null} />);
 
-    expect(await screen.findByText(/Execution tree/i)).toBeInTheDocument();
+    expect(await screen.findByText(/What happened/i)).toBeInTheDocument();
     expect(screen.getByText('moonshotai/kimi-k2')).toBeInTheDocument();
     expect(screen.getByText(/openrouter · 1.2k in · 80 out/i)).toBeInTheDocument();
     expect(screen.getAllByText(/打开虎扑并总结明天的赛程/).length).toBeGreaterThan(0);
@@ -131,15 +131,15 @@ describe('CommandCenter', () => {
     expect(screen.queryByText(/"action": "open"/)).not.toBeInTheDocument();
   });
 
-  it('lets the user hide a default-expanded execution tree', async () => {
+  it('lets the user hide a default-expanded activity view', async () => {
     const user = userEvent.setup();
     render(<CommandCenter events={sampleEvents} onAbortCommand={vi.fn()} abortingRunId={null} />);
 
-    expect(await screen.findByText(/Execution tree/i)).toBeInTheDocument();
+    expect(await screen.findByText(/What happened/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /hide details/i }));
 
-    expect(screen.queryByText(/Execution tree/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/What happened/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /view details/i })).toBeInTheDocument();
   });
 
@@ -149,7 +149,7 @@ describe('CommandCenter', () => {
 
     expect(screen.queryByText(/"action": "open"/)).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: /show tool payload/i }));
+    await user.click(screen.getByRole('button', { name: /show tool details/i }));
 
     expect(screen.getByText(/"action": "open"/)).toBeInTheDocument();
   });
@@ -285,7 +285,8 @@ describe('CommandCenter', () => {
   it('expands long llm replies to reveal the full response text', async () => {
     const user = userEvent.setup();
     const hiddenTail = '这是完整回复最后一段，只会在展开后出现。';
-    const longPreview = `${'前文内容。'.repeat(120)}${hiddenTail}`;
+    const longPreview = `${'前文内容。'.repeat(60)}…`;
+    const longResponseText = `${'前文内容。'.repeat(120)}${hiddenTail}`;
 
     render(
       <CommandCenter
@@ -330,6 +331,7 @@ describe('CommandCenter', () => {
               tokensIn: 1000,
               tokensOut: 500,
               durationMs: 4200,
+              responseText: longResponseText,
               responsePreview: longPreview,
             },
           },
@@ -390,7 +392,7 @@ describe('CommandCenter', () => {
 
     expect(screen.queryByText(hiddenTail)).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: /expand full prompt/i }));
+    await user.click(screen.getByRole('button', { name: /expand all/i }));
 
     expect(screen.getByText((content) => content.includes(hiddenTail))).toBeInTheDocument();
   });

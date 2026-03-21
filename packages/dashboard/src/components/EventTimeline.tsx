@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { EventBadge, getEventCategory, type EventCategory } from './EventBadge.js';
+import { EventBadge, getEventCategory, getEventDisplayName, type EventCategory } from './EventBadge.js';
 
 interface PaddockEvent {
   id: string;
@@ -111,7 +111,7 @@ export function EventTimeline({ events, sessionId }: { events: PaddockEvent[]; s
               {new Date(e.timestamp).toLocaleTimeString()}
             </span>
             <EventBadge type={e.type} />
-            <span className="w-32 shrink-0 truncate text-xs text-stone-500">{e.type}</span>
+            <span className="w-32 shrink-0 truncate text-xs text-stone-500">{getEventDisplayName(e.type)}</span>
             <ExpandablePayload event={e} />
           </div>
         ))}

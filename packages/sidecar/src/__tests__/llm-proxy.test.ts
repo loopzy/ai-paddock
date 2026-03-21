@@ -131,6 +131,7 @@ describe('LLMProxy', () => {
       expect(responseEvent?.payload.tokensOut).toBe(45);
       expect(responseEvent?.payload.streamed).toBe(true);
       expect(responseEvent?.payload.chunkCount).toBe(2);
+      expect(responseEvent?.payload.responseText).toBe('done');
       expect(responseEvent?.payload.responsePreview).toContain('done');
     } finally {
       proxy.stop();
@@ -236,8 +237,55 @@ describe('LLMProxy', () => {
       expect(await response.text()).toContain('data:');
 
       const responseEvent = reporter.events.find((event) => event.type === 'llm.response');
+      expect(responseEvent?.payload.responseText).toBe('我找到了一些中文网站。');
       expect(responseEvent?.payload.responsePreview).toBe('我找到了一些中文网站。');
       expect(String(responseEvent?.payload.responsePreview)).not.toContain('\n');
+    } finally {
+      proxy.stop();
+    }
+  });
+
+  it('keeps the full response text even when responsePreview is truncated', async () => {
+    const reporter = new ReporterStub();
+    const proxyPort = 48870 + Math.floor(Math.random() * 1000);
+    const proxy = new LLMProxy(proxyPort, reporter as any, new ControlPlaneClient(['http://control.test']), 'session-sidecar-test');
+    const longReply = '很长的回答。'.repeat(120) + '最后一段';
+
+    global.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input) === 'http://control.test/api/llm/proxy') {
+        expect(init?.method).toBe('POST');
+        return new Response(JSON.stringify({
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: 'moonshotai/kimi-k2',
+            usage: { prompt_tokens: 320, completion_tokens: 600 },
+            choices: [{ message: { content: longReply } }],
+          }),
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return originalFetch(input, init);
+    };
+
+    await proxy.start();
+
+    try {
+      const response = await originalFetch(`http://127.0.0.1:${proxyPort}/openrouter/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'moonshotai/kimi-k2',
+          messages: [{ role: 'user', content: 'hello' }],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const responseEvent = reporter.events.find((event) => event.type === 'llm.response');
+      expect(responseEvent?.payload.responseText).toBe(longReply);
+      expect(String(responseEvent?.payload.responsePreview).length).toBeLessThan(longReply.length);
     } finally {
       proxy.stop();
     }

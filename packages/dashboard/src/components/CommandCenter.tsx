@@ -78,14 +78,14 @@ function StepKindPill({ kind }: { kind: CommandStep['kind'] }) {
     system: 'bg-stone-100 text-stone-700 border-stone-200',
   };
   const label: Record<CommandStep['kind'], string> = {
-    'llm-request': 'LLM turn',
-    'llm-response': 'LLM reply',
-    'tool-intent': 'Tool',
-    'gate-verdict': 'Policy',
-    'tool-result': 'Result',
-    'agent-message': 'Reply',
-    'agent-error': 'Error',
-    'command-status': 'Status',
+    'llm-request': 'Model step',
+    'llm-response': 'Model output',
+    'tool-intent': 'Using tool',
+    'gate-verdict': 'Safety check',
+    'tool-result': 'Tool result',
+    'agent-message': 'Answer',
+    'agent-error': 'Issue',
+    'command-status': 'Run update',
     system: 'System',
   };
   return (
@@ -180,7 +180,7 @@ function ExpandableMarkdown({
 function markdownLabelsForStep(step: CommandStep): { expandLabel: string; collapseLabel: string } {
   switch (step.kind) {
     case 'llm-request':
-      return { expandLabel: 'Expand full prompt', collapseLabel: 'Collapse prompt' };
+      return { expandLabel: 'Expand All', collapseLabel: 'Collapse prompt' };
     case 'llm-response':
     case 'agent-message':
       return { expandLabel: 'Expand full reply', collapseLabel: 'Collapse full reply' };
@@ -194,7 +194,7 @@ function markdownLabelsForStep(step: CommandStep): { expandLabel: string; collap
 function detailLabelsForStep(step: CommandStep): { expandLabel: string; collapseLabel: string } {
   switch (step.kind) {
     case 'llm-request':
-      return { expandLabel: 'Expand full prompt', collapseLabel: 'Collapse prompt' };
+      return { expandLabel: 'Expand All', collapseLabel: 'Collapse prompt' };
     case 'tool-intent':
     case 'tool-result':
       return { expandLabel: 'Expand full details', collapseLabel: 'Collapse details' };
@@ -410,6 +410,7 @@ export function CommandCenter({
       <div className="flex-1 overflow-y-auto px-6 py-8">
         <div className="rounded-[28px] border border-stone-200 bg-white/80 p-6 text-sm text-stone-500 shadow-[0_12px_32px_rgba(80,60,30,0.06)]">
           Commands will show up here as structured runs once you send something to the agent.
+          
         </div>
       </div>
     );
@@ -472,7 +473,7 @@ export function CommandCenter({
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-stone-500">
                     <span>{run.toolsUsed} tools</span>
                     <span>•</span>
-                    <span>{run.llmTurns} LLM turns</span>
+                    <span>{run.llmTurns} model steps</span>
                     {run.totalTokens > 0 && (
                       <>
                         <span>•</span>
@@ -535,7 +536,7 @@ export function CommandCenter({
 
               {run.responseText && (
                 <div className="mt-4 rounded-[24px] border border-emerald-200 bg-emerald-50 p-4">
-                  <div className="text-[11px] uppercase tracking-wide text-emerald-700">Agent Reply</div>
+                  <div className="text-[11px] uppercase tracking-wide text-emerald-700">Answer</div>
                   <div className="mt-2 text-sm leading-7 text-emerald-950">
                     <ExpandableMarkdown content={run.responseText} previewChars={520} />
                   </div>
@@ -544,7 +545,7 @@ export function CommandCenter({
 
               {run.latestError && run.status !== 'completed' && (
                 <div className="mt-4 rounded-[24px] border border-rose-200 bg-rose-50 p-4">
-                  <div className="text-[11px] uppercase tracking-wide text-rose-700">Latest Error</div>
+                  <div className="text-[11px] uppercase tracking-wide text-rose-700">Latest issue</div>
                   <div className="mt-2 text-sm leading-6 text-rose-900">
                     <ExpandableTextBlock
                       content={run.latestError}
@@ -563,7 +564,7 @@ export function CommandCenter({
                 <div className="mt-5 space-y-4">
                   {run.steps.length > 0 && (
                     <div>
-                      <div className="text-[11px] uppercase tracking-wide text-stone-500">Execution tree</div>
+                      <div className="text-[11px] uppercase tracking-wide text-stone-500">What happened</div>
                       <div className="mt-3">
                         <StepTree steps={run.steps} />
                       </div>

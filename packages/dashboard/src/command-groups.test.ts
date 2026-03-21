@@ -90,7 +90,7 @@ describe('buildCommandRuns', () => {
     });
     expect(runs[0].steps.at(-1)).toMatchObject({
       kind: 'agent-message',
-      title: 'Final answer',
+      title: 'Answer',
       body: '明天有几场足球和篮球比赛。',
     });
   });
