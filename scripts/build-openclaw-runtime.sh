@@ -52,16 +52,17 @@ rm -f "$OPENCLAW_SRC/$PACK_FILE"
 mv "$STAGE_ROOT/pnpm-lock.yaml" "$STAGE_ROOT/package/pnpm-lock.yaml"
 
 echo "Preparing staged OpenClaw runtime manifest and sources..."
-pnpm --filter @paddock/control-plane exec tsx "$PROJECT_ROOT/scripts/prepare-openclaw-runtime-stage.ts" "$OPENCLAW_SRC" "$STAGE_ROOT/package"
+pnpm --filter @paddock/control-plane exec node --import tsx "$PROJECT_ROOT/scripts/prepare-openclaw-runtime-stage.ts" "$OPENCLAW_SRC" "$STAGE_ROOT/package"
 
-echo "Installing production dependencies into the OpenClaw runtime bundle..."
+echo "Installing OpenClaw runtime dependencies..."
 (
   cd "$STAGE_ROOT/package"
-  CI=1 NO_UPDATE_NOTIFIER=1 pnpm install --prod --no-frozen-lockfile
+  CI=1 NO_UPDATE_NOTIFIER=1 pnpm install --no-frozen-lockfile
+  CI=1 NO_UPDATE_NOTIFIER=1 pnpm prune --prod
 )
 
-echo "Injecting OpenClaw runtime stubs for disabled sandbox-external channels..."
-pnpm --filter @paddock/control-plane exec tsx "$PROJECT_ROOT/scripts/write-openclaw-runtime-stubs.ts" "$STAGE_ROOT/package"
+echo "Injecting OpenClaw runtime stubs for disabled runtime packages..."
+pnpm --filter @paddock/control-plane exec node --import tsx "$PROJECT_ROOT/scripts/write-openclaw-runtime-stubs.ts" "$STAGE_ROOT/package"
 
 echo "Verifying packaged OpenClaw runtime..."
 (

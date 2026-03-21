@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -105,10 +105,10 @@ describe('openclaw runtime bundle preparation', () => {
       dependencies?: Record<string, string>;
     };
     expect(manifest.dependencies).toMatchObject({
+      '@tloncorp/api': 'github:tloncorp/api-beta#deadbeef',
       express: '^5.2.1',
       zod: '^4.3.6',
     });
-    expect(manifest.dependencies).not.toHaveProperty('@tloncorp/api');
     expect(manifest.dependencies).not.toHaveProperty('@matrix-org/matrix-sdk-crypto-nodejs');
 
     const copiedSource = join(stageRoot, 'src', 'plugins', 'runtime', 'index.ts');
@@ -176,18 +176,11 @@ describe('openclaw runtime bundle preparation', () => {
     expect(collectRootBareRuntimeImports(join(stageRoot, 'dist'))).toEqual(['@tloncorp/api', 'chalk']);
   });
 
-  it('writes runtime stubs for disabled channel packages that the CLI still imports', async () => {
+  it('leaves dependency installation untouched when no runtime packages are stubbed', async () => {
     const stageRoot = createTempDir('paddock-openclaw-stage-');
 
     await writeOpenClawRuntimeStubs(stageRoot);
 
-    const packageJson = JSON.parse(
-      readFileSync(join(stageRoot, 'node_modules', '@tloncorp', 'api', 'package.json'), 'utf8'),
-    ) as { exports?: string; main?: string };
-    expect(packageJson.exports).toBe('./dist/index.js');
-    expect(packageJson.main).toBe('./dist/index.js');
-    expect(
-      readFileSync(join(stageRoot, 'node_modules', '@tloncorp', 'api', 'dist', 'index.js'), 'utf8'),
-    ).toContain('configureClient');
+    expect(existsSync(join(stageRoot, 'node_modules', '@tloncorp', 'api'))).toBe(false);
   });
 });

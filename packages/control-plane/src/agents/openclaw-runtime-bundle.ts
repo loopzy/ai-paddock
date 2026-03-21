@@ -6,25 +6,10 @@ type PackageManifest = {
   dependencies?: Record<string, string>;
 };
 
-const STUBBED_RUNTIME_PACKAGES: Record<string, { packageJson: PackageManifest & { name: string; type: 'module' }; files: Record<string, string> }> = {
-  '@tloncorp/api': {
-    packageJson: {
-      name: '@tloncorp/api',
-      type: 'module',
-      dependencies: {},
-    },
-    files: {
-      'dist/index.js': `function unavailable() {
-  throw new Error("@tloncorp/api is disabled in this Paddock runtime bundle because Tlon channels are not enabled inside the sandbox.");
-}
-
-export const configureClient = unavailable;
-export const uploadFile = unavailable;
-export default { configureClient, uploadFile };
-`,
-    },
-  },
-};
+// Keep this list empty by default so the packaged OpenClaw runtime preserves
+// the upstream dependency graph. Only add entries when a package is
+// intentionally replaced by a Paddock-specific runtime shim.
+const STUBBED_RUNTIME_PACKAGES: Record<string, { packageJson: PackageManifest & { name: string; type: 'module' }; files: Record<string, string> }> = {};
 
 const SOURCE_WORKTREE_DIRS = [
   ['src'],
