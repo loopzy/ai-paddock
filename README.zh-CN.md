@@ -252,6 +252,19 @@ pnpm run prepare:simplebox-rootfs
 pnpm run prepare:computerbox-rootfs
 ```
 
+如果你使用的是宿主机本地代理，例如运行在 `127.0.0.1` / `localhost` 上的 Clash、Surge 或 v2ray，那么保持平时的 shell 导出方式即可。`prepare:sandbox-rootfs` 会自动把这些 loopback 代理改写成 Docker build 容器可访问的 `host.docker.internal`，并附带 host-gateway 映射，让构建容器能够连回宿主机代理。
+
+例如：
+
+```bash
+export https_proxy=http://127.0.0.1:7890
+export http_proxy=http://127.0.0.1:7890
+export all_proxy=socks5://127.0.0.1:7890
+pnpm run prepare:sandbox-rootfs
+```
+
+如果你使用的是较老的 Docker 版本，不支持 `host-gateway`，可以在执行准备步骤前，手动把代理地址直接写成 `http://host.docker.internal:7890`。
+
 ### 第 6 步：准备 Node 运行时与 OpenClaw 运行时
 
 ```bash

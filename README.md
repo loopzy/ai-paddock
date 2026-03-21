@@ -266,6 +266,19 @@ pnpm run prepare:simplebox-rootfs
 pnpm run prepare:computerbox-rootfs
 ```
 
+If you use a host-local proxy such as Clash, Surge, or v2ray on `127.0.0.1` / `localhost`, you can keep your usual shell exports. `prepare:sandbox-rootfs` automatically rewrites loopback proxy build args to `host.docker.internal` for Docker build steps and adds a host-gateway mapping so the build container can reach the host proxy.
+
+Example:
+
+```bash
+export https_proxy=http://127.0.0.1:7890
+export http_proxy=http://127.0.0.1:7890
+export all_proxy=socks5://127.0.0.1:7890
+pnpm run prepare:sandbox-rootfs
+```
+
+If you are using an older Docker engine that does not support `host-gateway`, export the proxy directly as `http://host.docker.internal:7890` before running the prepare step.
+
 ### Step 6: Prepare Node Runtime & OpenClaw Runtime
 
 ```bash

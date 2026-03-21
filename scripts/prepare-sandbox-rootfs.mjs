@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
@@ -24,6 +24,8 @@ const SANDBOX_ROOTFS = {
 };
 
 const ROOTFS_FEATURES_FILE = 'paddock-rootfs-features.json';
+const DOCKER_BUILD_PROXY_ENV_NAMES = ['http_proxy', 'https_proxy', 'all_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'no_proxy'];
+const DOCKER_BUILD_PROXY_HOST = 'host.docker.internal';
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
@@ -37,15 +39,77 @@ function runShell(command, options = {}) {
   });
 }
 
-function getDockerBuildArgs() {
-  const args = [];
-  for (const envName of ['http_proxy', 'https_proxy', 'all_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'no_proxy']) {
-    const value = process.env[envName]?.trim();
-    if (value) {
-      args.push(`--build-arg ${envName}=${shellQuote(value)}`);
+function isLoopbackHostname(hostname) {
+  const normalized = String(hostname).trim().replace(/^\[|\]$/g, '').toLowerCase();
+  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1';
+}
+
+function rewriteDockerBuildProxyValue(rawValue) {
+  const value = String(rawValue).trim();
+  if (!value) return { value, rewritten: false };
+
+  try {
+    const parsed = new URL(value);
+    if (!isLoopbackHostname(parsed.hostname)) {
+      return { value, rewritten: false };
     }
+
+    const auth =
+      parsed.username || parsed.password ? `${parsed.username}${parsed.password ? `:${parsed.password}` : ''}@` : '';
+    const port = parsed.port ? `:${parsed.port}` : '';
+    const suffix =
+      parsed.pathname === '/' && !value.endsWith('/') && !parsed.search && !parsed.hash
+        ? ''
+        : `${parsed.pathname}${parsed.search}${parsed.hash}`;
+
+    return {
+      value: `${parsed.protocol}//${auth}${DOCKER_BUILD_PROXY_HOST}${port}${suffix}`,
+      rewritten: true,
+      originalHost: parsed.hostname,
+    };
+  } catch {
+    const match = value.match(/^(localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1)(?=[:/]|$)(.*)$/i);
+    if (!match) {
+      return { value, rewritten: false };
+    }
+    return {
+      value: `${DOCKER_BUILD_PROXY_HOST}${match[2]}`,
+      rewritten: true,
+      originalHost: match[1],
+    };
   }
-  return args.join(' ');
+}
+
+function getDockerBuildArgs(env = process.env) {
+  const args = [];
+  const notices = [];
+  let needsHostGateway = false;
+
+  for (const envName of DOCKER_BUILD_PROXY_ENV_NAMES) {
+    const rawValue = env[envName]?.trim();
+    if (!rawValue) continue;
+
+    let value = rawValue;
+    if (envName !== 'NO_PROXY' && envName !== 'no_proxy') {
+      const rewritten = rewriteDockerBuildProxyValue(rawValue);
+      value = rewritten.value;
+      if (rewritten.rewritten) {
+        needsHostGateway = true;
+        notices.push(
+          `[prepare-sandbox-rootfs] Rewriting ${envName} from ${rewritten.originalHost} to ${DOCKER_BUILD_PROXY_HOST} for Docker build reachability.`,
+        );
+      } else if (value.includes(DOCKER_BUILD_PROXY_HOST)) {
+        needsHostGateway = true;
+      }
+    }
+    args.push(`--build-arg ${envName}=${shellQuote(value)}`);
+  }
+
+  return {
+    argString: args.join(' '),
+    notices,
+    needsHostGateway,
+  };
 }
 
 function hasLocalDockerImage(tag) {
@@ -79,11 +143,15 @@ function prepareSandboxRootfs(sandboxType) {
 
   if (forceRebuild || !hasLocalDockerImage(config.preparedImageName)) {
     console.log(`[prepare-sandbox-rootfs] Baking browser-ready ${config.label} rootfs from ${config.imageName}...`);
-    const buildArgs = getDockerBuildArgs();
+    const { argString: buildArgs, notices, needsHostGateway } = getDockerBuildArgs();
+    for (const notice of notices) {
+      console.log(notice);
+    }
     runShell(
       [
         'docker build',
         '--pull=false',
+        needsHostGateway ? `--add-host ${DOCKER_BUILD_PROXY_HOST}=host-gateway` : '',
         `--build-arg BASE_IMAGE=${shellQuote(config.imageName)}`,
         buildArgs,
         `-f ${shellQuote(resolve(repoRoot, 'scripts', 'Dockerfile.sandbox-rootfs-browser'))}`,
@@ -134,14 +202,22 @@ function prepareSandboxRootfs(sandboxType) {
   console.log('[prepare-sandbox-rootfs] Python + Playwright + Chromium are preloaded, so first OpenClaw deploy can stay offline.');
 }
 
-const target = process.argv[2] ?? 'all';
-if (target === 'all') {
-  prepareSandboxRootfs('simple-box');
-  prepareSandboxRootfs('computer-box');
-} else if (target === 'simple-box' || target === 'computer-box') {
-  prepareSandboxRootfs(target);
-} else {
-  console.error(`[prepare-sandbox-rootfs] Unknown target: ${target}`);
-  console.error('[prepare-sandbox-rootfs] Use one of: simple-box, computer-box, all');
-  process.exit(1);
+function main(argv = process.argv) {
+  const target = argv[2] ?? 'all';
+  if (target === 'all') {
+    prepareSandboxRootfs('simple-box');
+    prepareSandboxRootfs('computer-box');
+  } else if (target === 'simple-box' || target === 'computer-box') {
+    prepareSandboxRootfs(target);
+  } else {
+    console.error(`[prepare-sandbox-rootfs] Unknown target: ${target}`);
+    console.error('[prepare-sandbox-rootfs] Use one of: simple-box, computer-box, all');
+    process.exit(1);
+  }
 }
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}
+
+export { DOCKER_BUILD_PROXY_HOST, getDockerBuildArgs, main, rewriteDockerBuildProxyValue };
