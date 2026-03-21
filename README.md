@@ -45,6 +45,10 @@ Paddock is not a fork of OpenClaw. It is not another agent framework. It is:
 - A **standardized agent monitoring and boundary protocol**
 - A **security runtime for any agent**
 
+<div align="center">
+  <img src="assets/paddock_screenshot_0.jpg" width="600" alt="Banner">
+</div>
+
 ## Core Features
 
 ### 🔒 Full Linux Sandbox Isolation
