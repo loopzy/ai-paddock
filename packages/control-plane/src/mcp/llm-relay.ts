@@ -85,6 +85,8 @@ export interface LLMProxyResponse {
   status: number;
   headers: Record<string, string>;
   body: string;
+  effectiveBody?: string;
+  effectiveModel?: string;
 }
 
 export class LLMRelay {
@@ -123,6 +125,47 @@ export class LLMRelay {
     return (override || config.baseUrl).replace(/\/+$/, '');
   }
 
+  private rewriteRequestBody(
+    provider: string,
+    headers: Record<string, string>,
+    body: string,
+  ): { body: string; effectiveModel?: string } {
+    const configuredModel = this.configStore?.getModel(provider);
+    if (!configuredModel) {
+      return { body, effectiveModel: this.extractModelFromBody(body) };
+    }
+
+    const contentTypeHeader = Object.entries(headers).find(([key]) => key.toLowerCase() === 'content-type')?.[1] ?? '';
+    const looksLikeJson = contentTypeHeader.toLowerCase().includes('application/json') || body.trim().startsWith('{');
+    if (!looksLikeJson) {
+      return { body, effectiveModel: this.extractModelFromBody(body) };
+    }
+
+    try {
+      const parsed = JSON.parse(body) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return { body, effectiveModel: this.extractModelFromBody(body) };
+      }
+
+      parsed.model = configuredModel;
+      return {
+        body: JSON.stringify(parsed),
+        effectiveModel: configuredModel,
+      };
+    } catch {
+      return { body, effectiveModel: this.extractModelFromBody(body) };
+    }
+  }
+
+  private extractModelFromBody(body: string): string | undefined {
+    try {
+      const parsed = JSON.parse(body) as Record<string, unknown>;
+      return typeof parsed.model === 'string' && parsed.model ? parsed.model : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /**
    * Forward a request to the real LLM API with injected credentials.
    */
@@ -149,6 +192,7 @@ export class LLMRelay {
 
     // Build auth header value
     const authValue = config.authHeader === 'authorization' ? `Bearer ${apiKey}` : apiKey;
+    const rewritten = this.rewriteRequestBody(req.provider, req.headers, req.body);
 
     // Forward to real API
     const normalizedPath = normalizeProviderPath(req.provider, req.path);
@@ -164,7 +208,7 @@ export class LLMRelay {
       const response = await fetch(targetUrl, {
         method: req.method,
         headers,
-        body: req.method !== 'GET' && req.method !== 'HEAD' ? req.body : undefined,
+        body: req.method !== 'GET' && req.method !== 'HEAD' ? rewritten.body : undefined,
       });
 
       const body = await response.text();
@@ -181,12 +225,16 @@ export class LLMRelay {
         status: response.status,
         headers: responseHeaders,
         body,
+        effectiveBody: rewritten.body,
+        effectiveModel: rewritten.effectiveModel,
       };
     } catch (err) {
       return {
         status: 502,
         headers: {},
         body: JSON.stringify({ error: `Failed to reach ${req.provider} API: ${err}` }),
+        effectiveBody: rewritten.body,
+        effectiveModel: rewritten.effectiveModel,
       };
     }
   }

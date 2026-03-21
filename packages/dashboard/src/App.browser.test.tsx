@@ -62,11 +62,13 @@ function jsonResponse(body: MockResponseBody, ok = true, status = ok ? 200 : 500
 
 describe('App browser journey', () => {
   const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<ReturnType<typeof jsonResponse>>>();
+  let failStartRequest = false;
 
   beforeEach(() => {
     cleanup();
     MockWebSocket.reset();
     fetchMock.mockReset();
+    failStartRequest = false;
 
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
@@ -137,10 +139,10 @@ describe('App browser journey', () => {
           createdAt: 3,
         });
       }
-      if ((url === '/api/sessions/sess-1/events' || url === '/api/sessions/sess-2/events' || url === '/api/sessions/sess-new/events') && method === 'GET') {
+      if ((url === '/api/sessions/sess-1/events' || url === '/api/sessions/sess-2/events' || url === '/api/sessions/sess-3/events' || url === '/api/sessions/sess-new/events') && method === 'GET') {
         return jsonResponse([]);
       }
-      if ((url === '/api/sessions/sess-1/hitl/pending' || url === '/api/sessions/sess-2/hitl/pending' || url === '/api/sessions/sess-new/hitl/pending') && method === 'GET') {
+      if ((url === '/api/sessions/sess-1/hitl/pending' || url === '/api/sessions/sess-2/hitl/pending' || url === '/api/sessions/sess-3/hitl/pending' || url === '/api/sessions/sess-new/hitl/pending') && method === 'GET') {
         return jsonResponse([]);
       }
       if (url === '/api/sessions/sess-1/deploy-agent' && method === 'POST') {
@@ -154,6 +156,9 @@ describe('App browser journey', () => {
         return jsonResponse({ stopped: true });
       }
       if (url === '/api/sessions/sess-3/start' && method === 'POST') {
+        if (failStartRequest) {
+          return jsonResponse({ error: 'Failed to start sandbox: invalid argument: box already exists' }, false, 500);
+        }
         return jsonResponse({ started: true });
       }
       if (url === '/api/sessions/sess-3' && method === 'DELETE') {
@@ -166,6 +171,7 @@ describe('App browser journey', () => {
               provider: 'openrouter',
               apiKey: '***',
               baseUrl: 'https://openrouter.ai/api/v1',
+              model: 'moonshotai/kimi-k2',
               enabled: true,
             },
           ],
@@ -250,8 +256,12 @@ describe('App browser journey', () => {
 
     await user.click(await screen.findByRole('button', { name: /API Keys/i }));
     expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
+    expect(screen.getByText('moonshotai/kimi-k2')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Edit' }));
+    const modelInput = screen.getByDisplayValue('moonshotai/kimi-k2');
+    await user.clear(modelInput);
+    await user.type(modelInput, 'deepseek/deepseek-chat');
     const baseUrlInput = screen.getByDisplayValue('https://openrouter.ai/api/v1');
     await user.clear(baseUrlInput);
     await user.type(baseUrlInput, 'https://openrouter.ai/api/v2');
@@ -266,6 +276,7 @@ describe('App browser journey', () => {
       expect(saveCall).toBeTruthy();
       expect(JSON.parse(String(saveCall?.[1]?.body))).toEqual({
         provider: 'openrouter',
+        model: 'deepseek/deepseek-chat',
         baseUrl: 'https://openrouter.ai/api/v2',
         apiKey: 'sk-test',
       });
@@ -422,6 +433,28 @@ describe('App browser journey', () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/sessions/sess-3/start', expect.objectContaining({ method: 'POST' }));
     });
+  });
+
+  it('clears the creating lock if start fails so new sandboxes can still be created', async () => {
+    failStartRequest = true;
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole('button', { name: /sess-3/i }));
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/sessions/sess-3/start', expect.objectContaining({ method: 'POST' }));
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Setting up sandbox/i)).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: /Create sandbox/i }));
+    const dialog = screen.getByRole('dialog', { name: /Create sandbox/i });
+    expect(within(dialog).getByRole('button', { name: /^Create sandbox$/i })).not.toBeDisabled();
   });
 
   it('deletes a session only after confirmation from the sidebar x button', async () => {

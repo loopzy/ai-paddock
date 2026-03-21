@@ -137,6 +137,59 @@ describe('LLMProxy', () => {
     }
   });
 
+  it('reports the effective host-overridden model in llm.request and llm.response', async () => {
+    const reporter = new ReporterStub();
+    const proxyPort = 41870 + Math.floor(Math.random() * 1000);
+    const proxy = new LLMProxy(proxyPort, reporter as any, new ControlPlaneClient(['http://control.test']), 'session-sidecar-test');
+
+    global.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input) === 'http://control.test/api/llm/proxy') {
+        expect(init?.method).toBe('POST');
+        return new Response(JSON.stringify({
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: 'qwen/qwen3.5-flash-02-23',
+            usage: { prompt_tokens: 12, completion_tokens: 3 },
+            choices: [{ message: { content: 'ok' } }],
+          }),
+          effectiveBody: JSON.stringify({
+            model: 'qwen/qwen3.5-flash-02-23',
+            messages: [{ role: 'user', content: 'switch please' }],
+            stream: false,
+          }),
+          effectiveModel: 'qwen/qwen3.5-flash-02-23',
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return originalFetch(input, init);
+    };
+
+    await proxy.start();
+
+    try {
+      const response = await originalFetch(`http://127.0.0.1:${proxyPort}/openrouter/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'minimax/minimax-m2.7',
+          messages: [{ role: 'user', content: 'switch please' }],
+          stream: false,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const requestEvent = reporter.events.find((event) => event.type === 'llm.request');
+      const responseEvent = reporter.events.find((event) => event.type === 'llm.response');
+      expect(requestEvent?.payload.model).toBe('qwen/qwen3.5-flash-02-23');
+      expect(responseEvent?.payload.model).toBe('qwen/qwen3.5-flash-02-23');
+    } finally {
+      proxy.stop();
+    }
+  });
+
   it('merges streamed text chunks into a single readable response preview', async () => {
     const reporter = new ReporterStub();
     const proxyPort = 44870 + Math.floor(Math.random() * 1000);
@@ -185,6 +238,182 @@ describe('LLMProxy', () => {
       const responseEvent = reporter.events.find((event) => event.type === 'llm.response');
       expect(responseEvent?.payload.responsePreview).toBe('我找到了一些中文网站。');
       expect(String(responseEvent?.payload.responsePreview)).not.toContain('\n');
+    } finally {
+      proxy.stop();
+    }
+  });
+
+  it('parses OpenAI Responses SSE streams from OpenRouter-style providers', async () => {
+    const reporter = new ReporterStub();
+    const proxyPort = 45870 + Math.floor(Math.random() * 1000);
+    const proxy = new LLMProxy(proxyPort, reporter as any, new ControlPlaneClient(['http://control.test']), 'session-sidecar-test');
+
+    global.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input) === 'http://control.test/api/llm/proxy') {
+        expect(init?.method).toBe('POST');
+        return new Response(JSON.stringify({
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+          body: [
+            'data: {"type":"response.created","response":{"model":"minimax/minimax-m2.7-20260318","usage":null,"output":[]}}',
+            '',
+            'data: {"type":"response.output_text.delta","delta":"hello "}',
+            '',
+            'data: {"type":"response.output_text.delta","delta":"from minimax"}',
+            '',
+            'data: {"type":"response.completed","response":{"model":"minimax/minimax-m2.7-20260318","usage":{"input_tokens":49,"output_tokens":12},"output":[]}}',
+            '',
+            'data: [DONE]',
+            '',
+          ].join('\n'),
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return originalFetch(input, init);
+    };
+
+    await proxy.start();
+
+    try {
+      const response = await originalFetch(`http://127.0.0.1:${proxyPort}/openrouter/responses`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'minimax/minimax-m2.7',
+          input: 'Reply with exactly: hello from minimax',
+          stream: true,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain('response.output_text.delta');
+
+      const responseEvent = reporter.events.find((event) => event.type === 'llm.response');
+      expect(responseEvent?.payload.provider).toBe('openrouter');
+      expect(responseEvent?.payload.model).toBe('minimax/minimax-m2.7-20260318');
+      expect(responseEvent?.payload.tokensIn).toBe(49);
+      expect(responseEvent?.payload.tokensOut).toBe(12);
+      expect(responseEvent?.payload.streamed).toBe(true);
+      expect(responseEvent?.payload.responsePreview).toBe('hello from minimax');
+    } finally {
+      proxy.stop();
+    }
+  });
+
+  it('does not duplicate the final preview when OpenRouter repeats completed output after streamed deltas', async () => {
+    const reporter = new ReporterStub();
+    const proxyPort = 47870 + Math.floor(Math.random() * 1000);
+    const proxy = new LLMProxy(proxyPort, reporter as any, new ControlPlaneClient(['http://control.test']), 'session-sidecar-test');
+
+    global.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input) === 'http://control.test/api/llm/proxy') {
+        expect(init?.method).toBe('POST');
+        return new Response(JSON.stringify({
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+          body: [
+            ': OPENROUTER PROCESSING',
+            '',
+            'data: {"type":"response.created","response":{"model":"minimax/minimax-m2.7-20260318","usage":null,"output":[]}}',
+            '',
+            'data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_tmp_r4ezossaw4","type":"message","status":"in_progress","role":"assistant","content":[]}}',
+            '',
+            'data: {"type":"response.content_part.added","output_index":1,"item_id":"msg_tmp_r4ezossaw4","content_index":0,"part":{"type":"output_text","text":"","annotations":[],"logprobs":[]}}',
+            '',
+            'data: {"type":"response.output_text.delta","output_index":1,"item_id":"msg_tmp_r4ezossaw4","content_index":0,"delta":"hello from minimax","logprobs":[]}',
+            '',
+            'data: {"type":"response.output_text.done","output_index":1,"item_id":"msg_tmp_r4ezossaw4","content_index":0,"text":"hello from minimax","logprobs":[]}',
+            '',
+            'data: {"type":"response.content_part.done","output_index":1,"item_id":"msg_tmp_r4ezossaw4","content_index":0,"part":{"type":"output_text","text":"hello from minimax","annotations":[],"logprobs":[]}}',
+            '',
+            'data: {"type":"response.output_item.done","output_index":1,"item":{"id":"msg_tmp_r4ezossaw4","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hello from minimax","annotations":[],"logprobs":[]}]}}',
+            '',
+            'data: {"type":"response.completed","response":{"model":"minimax/minimax-m2.7-20260318","usage":{"input_tokens":49,"output_tokens":129},"output":[{"id":"msg_tmp_r4ezossaw4","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello from minimax","annotations":[],"logprobs":[]}]}]}}',
+            '',
+            'data: [DONE]',
+            '',
+          ].join('\n'),
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return originalFetch(input, init);
+    };
+
+    await proxy.start();
+
+    try {
+      const response = await originalFetch(`http://127.0.0.1:${proxyPort}/openrouter/responses`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'minimax/minimax-m2.7',
+          input: 'Reply with exactly: hello from minimax',
+          stream: true,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const responseEvent = reporter.events.find((event) => event.type === 'llm.response');
+      expect(responseEvent?.payload.model).toBe('minimax/minimax-m2.7-20260318');
+      expect(responseEvent?.payload.tokensIn).toBe(49);
+      expect(responseEvent?.payload.tokensOut).toBe(129);
+      expect(responseEvent?.payload.responsePreview).toBe('hello from minimax');
+    } finally {
+      proxy.stop();
+    }
+  });
+
+  it('falls back to a reasoning preview when a responses stream has no visible output text yet', async () => {
+    const reporter = new ReporterStub();
+    const proxyPort = 46870 + Math.floor(Math.random() * 1000);
+    const proxy = new LLMProxy(proxyPort, reporter as any, new ControlPlaneClient(['http://control.test']), 'session-sidecar-test');
+
+    global.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input) === 'http://control.test/api/llm/proxy') {
+        expect(init?.method).toBe('POST');
+        return new Response(JSON.stringify({
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+          body: [
+            'data: {"type":"response.created","response":{"model":"minimax/minimax-m2.7-20260318","usage":null,"output":[]}}',
+            '',
+            'data: {"type":"response.reasoning_text.delta","delta":"The user wants a literal response."}',
+            '',
+            'data: {"type":"response.completed","response":{"model":"minimax/minimax-m2.7-20260318","usage":{"input_tokens":20,"output_tokens":5},"output":[]}}',
+            '',
+            'data: [DONE]',
+            '',
+          ].join('\n'),
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return originalFetch(input, init);
+    };
+
+    await proxy.start();
+
+    try {
+      const response = await originalFetch(`http://127.0.0.1:${proxyPort}/openrouter/responses`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'minimax/minimax-m2.7',
+          input: 'Reply with exactly: hello from minimax',
+          stream: true,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const responseEvent = reporter.events.find((event) => event.type === 'llm.response');
+      expect(String(responseEvent?.payload.responsePreview)).toContain('[reasoning]');
+      expect(String(responseEvent?.payload.responsePreview)).toContain('literal response');
+      expect(responseEvent?.payload.model).toBe('minimax/minimax-m2.7-20260318');
     } finally {
       proxy.stop();
     }

@@ -30,6 +30,21 @@ const sampleEvents = [
   },
 ];
 
+const longPayloadEvents = [
+  {
+    id: 'evt-long-1',
+    sessionId: 'sess-1',
+    seq: 1,
+    timestamp: 1_700_000_000_000,
+    type: 'llm.response',
+    payload: {
+      responsePreview: `${'很长的回复内容。'.repeat(80)}最后一段`,
+      model: 'moonshotai/kimi-k2',
+      provider: 'openrouter',
+    },
+  },
+];
+
 describe('EventTimeline', () => {
   it('shows one-line raw json by default', () => {
     render(<EventTimeline events={sampleEvents} sessionId="sess-1" />);
@@ -42,10 +57,21 @@ describe('EventTimeline', () => {
     const user = userEvent.setup();
     render(<EventTimeline events={sampleEvents} sessionId="sess-1" />);
 
-    const buttons = screen.getAllByRole('button', { name: /expand payload/i });
+    const buttons = screen.getAllByRole('button', { name: /expand payload|expand full payload/i });
     await user.click(buttons[0]);
 
     expect(screen.getByText(/"toolName": "browser"/)).toBeInTheDocument();
     expect(screen.getByText(/"url": "https:\/\/www.hupu.com"/)).toBeInTheDocument();
+  });
+
+  it('shows an explicit full-expand button for long payloads', async () => {
+    const user = userEvent.setup();
+    render(<EventTimeline events={longPayloadEvents} sessionId="sess-1" />);
+
+    await user.click(screen.getByRole('button', { name: /expand full payload/i }));
+
+    expect(screen.getByRole('button', { name: /collapse payload/i })).toBeInTheDocument();
+    expect(screen.getByText(/"responsePreview":/)).toBeInTheDocument();
+    expect(screen.getByText(/最后一段/)).toBeInTheDocument();
   });
 });

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import '@testing-library/jest-dom/vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { CommandCenter } from './CommandCenter.js';
@@ -170,6 +170,65 @@ describe('CommandCenter', () => {
     expect(onAbortCommand).toHaveBeenCalledWith('run-2');
   });
 
+  it('sticks to the latest command by default without forcing scroll after manual upward scrolling', () => {
+    const originalScrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
+    const originalClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
+
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return 1200;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return 300;
+      },
+    });
+
+    try {
+      const { rerender } = render(<CommandCenter events={sampleEvents} onAbortCommand={vi.fn()} abortingRunId={null} />);
+      const scroller = screen.getByTestId('command-center-scroll');
+
+      expect(scroller.scrollTop).toBe(1200);
+
+      scroller.scrollTop = 100;
+      fireEvent.scroll(scroller);
+
+      rerender(
+        <CommandCenter
+          events={[
+            ...sampleEvents,
+            {
+              id: 'evt-6',
+              sessionId: 'sess-1',
+              seq: 7,
+              timestamp: 1_700_000_003_000,
+              type: 'amp.agent.message',
+              payload: { text: '补充说明', runId: 'run-1' },
+            },
+          ]}
+          onAbortCommand={vi.fn()}
+          abortingRunId={null}
+        />,
+      );
+
+      expect(scroller.scrollTop).toBe(100);
+    } finally {
+      if (originalScrollHeight) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollHeight', originalScrollHeight);
+      } else {
+        delete (HTMLElement.prototype as any).scrollHeight;
+      }
+      if (originalClientHeight) {
+        Object.defineProperty(HTMLElement.prototype, 'clientHeight', originalClientHeight);
+      } else {
+        delete (HTMLElement.prototype as any).clientHeight;
+      }
+    }
+  });
+
   it('renders agent replies as markdown instead of plain raw text', () => {
     render(<CommandCenter events={sampleEvents} onAbortCommand={vi.fn()} abortingRunId={null} />);
 
@@ -283,6 +342,134 @@ describe('CommandCenter', () => {
     expect(screen.queryByText(hiddenTail)).not.toBeInTheDocument();
 
     await user.click(screen.getAllByRole('button', { name: /expand full reply/i })[0]!);
+
+    expect(screen.getByText((content) => content.includes(hiddenTail))).toBeInTheDocument();
+  });
+
+  it('shows an expandable prompt section for long llm turn previews', async () => {
+    const user = userEvent.setup();
+    const hiddenTail = '这是提示词预览的最后一段。';
+    const longPrompt = `${'前置上下文。'.repeat(60)}${hiddenTail}`;
+
+    render(
+      <CommandCenter
+        events={[
+          {
+            id: 'evt-prompt-1',
+            sessionId: 'sess-1',
+            seq: 1,
+            timestamp: 1_700_000_000_000,
+            type: 'user.command',
+            payload: { command: '给我看看当前 llm turn' },
+          },
+          {
+            id: 'evt-prompt-2',
+            sessionId: 'sess-1',
+            seq: 2,
+            timestamp: 1_700_000_001_000,
+            type: 'amp.user.command',
+            payload: { command: '给我看看当前 llm turn', runId: 'run-prompt' },
+          },
+          {
+            id: 'evt-prompt-3',
+            sessionId: 'sess-1',
+            seq: 3,
+            timestamp: 1_700_000_002_000,
+            type: 'llm.request',
+            payload: {
+              provider: 'openrouter',
+              model: 'moonshotai/kimi-k2',
+              messagesPreview: [{ role: 'user', text: longPrompt }],
+            },
+          },
+        ]}
+        onAbortCommand={vi.fn()}
+        abortingRunId={null}
+      />,
+    );
+
+    expect(screen.queryByText(hiddenTail)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /expand full prompt/i }));
+
+    expect(screen.getByText((content) => content.includes(hiddenTail))).toBeInTheDocument();
+  });
+
+  it('lets the user expand long latest error text on a failed run', async () => {
+    const user = userEvent.setup();
+    const hiddenTail = '这是错误详情最后一段。';
+    const longError = `${'前置错误日志。'.repeat(80)}${hiddenTail}`;
+
+    render(
+      <CommandCenter
+        events={[
+          {
+            id: 'evt-err-1',
+            sessionId: 'sess-1',
+            seq: 1,
+            timestamp: 1_700_000_000_000,
+            type: 'user.command',
+            payload: { command: '触发一个很长的错误' },
+          },
+          {
+            id: 'evt-err-2',
+            sessionId: 'sess-1',
+            seq: 2,
+            timestamp: 1_700_000_001_000,
+            type: 'amp.user.command',
+            payload: { command: '触发一个很长的错误', runId: 'run-error' },
+          },
+          {
+            id: 'evt-err-3',
+            sessionId: 'sess-1',
+            seq: 3,
+            timestamp: 1_700_000_002_000,
+            type: 'amp.agent.error',
+            payload: {
+              category: 'runtime',
+              code: 'ERR_LONG',
+              message: longError,
+              recoverable: true,
+            },
+          },
+        ]}
+        onAbortCommand={vi.fn()}
+        abortingRunId={null}
+      />,
+    );
+
+    expect(screen.queryByText(hiddenTail)).not.toBeInTheDocument();
+
+    await user.click(screen.getAllByRole('button', { name: /expand full error/i })[0]!);
+
+    expect(screen.getByText((content) => content.includes(hiddenTail))).toBeInTheDocument();
+  });
+
+  it('lets the user expand a long command title from the run header', async () => {
+    const user = userEvent.setup();
+    const hiddenTail = '这是命令末尾的一段隐藏内容。';
+    const longCommand = `${'前置命令描述。'.repeat(40)}${hiddenTail}`;
+
+    render(
+      <CommandCenter
+        events={[
+          {
+            id: 'evt-command-1',
+            sessionId: 'sess-1',
+            seq: 1,
+            timestamp: 1_700_000_000_000,
+            type: 'user.command',
+            payload: { command: longCommand },
+          },
+        ]}
+        onAbortCommand={vi.fn()}
+        abortingRunId={null}
+      />,
+    );
+
+    expect(screen.queryByText(hiddenTail)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /expand full command/i }));
 
     expect(screen.getByText((content) => content.includes(hiddenTail))).toBeInTheDocument();
   });

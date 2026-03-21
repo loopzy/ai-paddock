@@ -188,6 +188,19 @@ describe('SessionManager', () => {
       expect(driver.calls.some(c => c.method === 'createBox')).toBe(true);
     });
 
+    it('should best-effort remove any stale named box before creating a new sandbox', async () => {
+      const session = await manager.create('openclaw');
+      await manager.start(session.id);
+
+      const destroyCallIndex = driver.calls.findIndex(
+        (call) => call.method === 'destroyBox' && call.args[0] === `paddock-${session.id}`,
+      );
+      const createCallIndex = driver.calls.findIndex((call) => call.method === 'createBox');
+
+      expect(destroyCallIndex).toBeGreaterThanOrEqual(0);
+      expect(createCallIndex).toBeGreaterThan(destroyCallIndex);
+    });
+
     it('should deploy sidecar (copyIn + exec)', async () => {
       const session = await manager.create('openclaw');
       await manager.start(session.id);
@@ -318,6 +331,11 @@ describe('SessionManager', () => {
 
       await expect(mgr2.start(session.id)).rejects.toThrow('Sidecar AMP Gate is not accepting connections');
       expect(mgr2.get(session.id)?.status).toBe('error');
+      expect(mgr2.get(session.id)?.vmId).toBeUndefined();
+
+      expect(
+        failDriver.calls.some((call) => call.method === 'destroyBox' && call.args[0] === 'vm-mock-123'),
+      ).toBe(true);
 
       const statusEvent = [...eventStore.getEvents(session.id)].reverse().find(
         (event) => event.type === 'session.status' && event.payload.status === 'error'

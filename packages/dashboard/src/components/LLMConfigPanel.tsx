@@ -9,6 +9,7 @@ interface SavedConfig {
   provider: string;
   apiKey: string;
   baseUrl?: string;
+  model?: string;
   enabled: boolean;
 }
 
@@ -24,6 +25,7 @@ export function LLMConfigPanel({ providers, onConfigured }: LLMConfigPanelProps)
   const [selectedProvider, setSelectedProvider] = useState<string>('');
   const [apiKey, setApiKey] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
+  const [model, setModel] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -41,6 +43,7 @@ export function LLMConfigPanel({ providers, onConfigured }: LLMConfigPanelProps)
     setSelectedProvider('');
     setApiKey('');
     setBaseUrl('');
+    setModel('');
     setError(null);
     setSuccess(null);
   };
@@ -70,6 +73,7 @@ export function LLMConfigPanel({ providers, onConfigured }: LLMConfigPanelProps)
   const handleStartEdit = (config: SavedConfig) => {
     setSelectedProvider(config.provider);
     setBaseUrl(config.baseUrl || '');
+    setModel(config.model || providers.find((provider) => provider.id === config.provider)?.defaultModel || '');
     setApiKey('');
     setError(null);
     setSuccess(null);
@@ -100,7 +104,8 @@ export function LLMConfigPanel({ providers, onConfigured }: LLMConfigPanelProps)
     try {
       const body: Record<string, unknown> = {
         provider: selectedProvider,
-        baseUrl: baseUrl || undefined,
+        baseUrl: baseUrl.trim() || null,
+        model: model.trim() || null,
       };
       if (apiKey) {
         body.apiKey = apiKey;
@@ -172,6 +177,9 @@ export function LLMConfigPanel({ providers, onConfigured }: LLMConfigPanelProps)
                         {providerLabel(providers, config.provider)}
                       </div>
                       <div className="mt-0.5 text-[11px] text-stone-500">
+                        {config.model || providers.find((provider) => provider.id === config.provider)?.defaultModel || 'Default model'}
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-stone-400">
                         {config.baseUrl || 'Default endpoint'}
                       </div>
                     </div>
@@ -225,7 +233,11 @@ export function LLMConfigPanel({ providers, onConfigured }: LLMConfigPanelProps)
             <label className="mb-1 block text-xs text-stone-500">Provider</label>
             <select
               value={selectedProvider}
-              onChange={(e) => setSelectedProvider(e.target.value)}
+              onChange={(e) => {
+                const nextProvider = e.target.value;
+                setSelectedProvider(nextProvider);
+                setModel(providers.find((provider) => provider.id === nextProvider)?.defaultModel || '');
+              }}
               disabled={mode === 'edit'}
               className="w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-xs text-stone-800 disabled:cursor-not-allowed disabled:bg-stone-100"
             >
@@ -241,6 +253,30 @@ export function LLMConfigPanel({ providers, onConfigured }: LLMConfigPanelProps)
           {selectedProviderInfo && (
             <>
               <div className="text-xs leading-5 text-stone-500">{selectedProviderInfo.description}</div>
+
+              <div>
+                <label className="mb-1 block text-xs text-stone-500">Model</label>
+                <input
+                  type="text"
+                  list={selectedProvider ? `llm-models-${selectedProvider}` : undefined}
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  placeholder={selectedProviderInfo.defaultModel}
+                  className="w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-xs text-stone-800"
+                />
+                {selectedProviderInfo.models?.length > 0 && (
+                  <datalist id={`llm-models-${selectedProvider}`}>
+                    {selectedProviderInfo.models.map((option: Record<string, any>) => (
+                      <option key={String(option.id)} value={String(option.id)}>
+                        {String(option.label ?? option.id)}
+                      </option>
+                    ))}
+                  </datalist>
+                )}
+                <div className="mt-1 text-[11px] text-stone-500">
+                  Leave empty to use the provider default model.
+                </div>
+              </div>
 
               <div>
                 <label className="mb-1 block text-xs text-stone-500">

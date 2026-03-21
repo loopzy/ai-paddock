@@ -32,27 +32,29 @@ function compactPayload(value: unknown): string {
 
 function ExpandablePayload({ event }: { event: PaddockEvent }) {
   const [open, setOpen] = useState(false);
-  const compact = truncateText(compactPayload(event.payload), 360);
+  const serialized = compactPayload(event.payload);
+  const compact = truncateText(serialized, 360);
   const pretty = JSON.stringify(event.payload, null, 2);
+  const shouldCollapse = serialized.length > 360;
   return (
     <div className="min-w-0 flex-1">
-      <div className="flex items-start gap-2">
+      {!open && (
+        <code className="min-w-0 block overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[11px] leading-5 text-stone-600">
+          {compact}
+        </code>
+      )}
+      <div className="mt-1">
         <button
           type="button"
           onClick={() => setOpen(!open)}
-          className="mt-0.5 text-[11px] text-stone-400 transition hover:text-stone-700"
-          aria-label={open ? 'Collapse payload' : 'Expand payload'}
+          className="rounded-full border border-stone-200 bg-white px-2.5 py-1 text-[11px] font-medium text-stone-500 transition hover:border-stone-300 hover:text-stone-900"
+          aria-label={open ? 'Collapse payload' : shouldCollapse ? 'Expand full payload' : 'Expand payload'}
         >
-          {open ? '▾' : '▸'}
+          {open ? 'Collapse payload' : shouldCollapse ? 'Expand full payload' : 'Expand payload'}
         </button>
-        {!open && (
-          <code className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[11px] leading-5 text-stone-600">
-            {compact}
-          </code>
-        )}
       </div>
       {open && (
-        <pre className="ml-5 mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-2xl bg-white p-3 text-[10px] leading-5 text-stone-600 ring-1 ring-stone-200">
+        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-2xl bg-white p-3 text-[10px] leading-5 text-stone-600 ring-1 ring-stone-200">
           {pretty}
         </pre>
       )}

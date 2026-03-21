@@ -135,7 +135,19 @@ export class ComputerBoxDriver implements SandboxDriver {
 
   async destroyBox(vmId: string): Promise<void> {
     const box = this.boxes.get(vmId);
-    if (!box) return;
+    if (!box) {
+      try {
+        const cleanupBox = new ComputerBox({
+          ...getSandboxRootfsOverride('computer-box'),
+          autoRemove: false,
+          name: vmId,
+        });
+        await removeBoxRuntime(cleanupBox as unknown as SnapshotCapableBox, vmId);
+      } catch {
+        // best effort cleanup for stale runtimes loaded outside this process
+      }
+      return;
+    }
     await box.stop();
     await removeBoxRuntime(box as unknown as SnapshotCapableBox, vmId);
     this.boxes.delete(vmId);

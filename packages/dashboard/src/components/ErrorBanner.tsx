@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { ExpandableTextBlock } from './ExpandableTextBlock.js';
 
 interface PaddockEvent {
   id: string;
@@ -35,13 +36,25 @@ export function ErrorBanner({ events }: { events: PaddockEvent[] }) {
     <div className={`px-4 py-2 text-xs ${isFatal ? 'bg-red-950 border-b border-red-800 text-red-300' : 'bg-red-950/70 border-b border-red-900 text-red-400'}`}>
       <div className="flex items-start justify-between gap-2">
         <div>
-          <span className="font-bold">{isFatal ? 'FATAL' : 'ERROR'}</span>
-          <span className="mx-2 text-red-600">|</span>
-          <span className="text-red-500">{p.category}</span>
-          <span className="mx-1 text-red-700">/</span>
-          <code className="text-red-300">{p.code}</code>
-          <span className="mx-2 text-red-700">—</span>
-          <span>{p.message}</span>
+          <div className="break-words">
+            <span className="font-bold">{isFatal ? 'FATAL' : 'ERROR'}</span>
+            <span className="mx-2 text-red-600">|</span>
+            <span className="text-red-500">{p.category}</span>
+            <span className="mx-1 text-red-700">/</span>
+            <code className="text-red-300">{p.code}</code>
+            <span className="mx-2 text-red-700">—</span>
+          </div>
+          <div className="mt-1">
+            <ExpandableTextBlock
+              content={p.message}
+              previewChars={260}
+              expandLabel="Expand full error"
+              collapseLabel="Collapse error"
+              preserveWhitespace
+              textClassName="text-red-300"
+              buttonClassName="border-red-800 bg-red-950/40 text-red-300 hover:border-red-700 hover:text-red-100"
+            />
+          </div>
           {isConfig && (
             <div className="mt-1 text-yellow-500">
               Hint: Check your environment variables. Missing API keys should be set before deploying the agent.

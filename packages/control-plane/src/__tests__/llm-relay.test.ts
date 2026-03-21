@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { EventStore } from '../events/event-store.js';
+import { LLMConfigStore } from '../config/llm-config-store.js';
 import { LLMRelay } from '../mcp/llm-relay.js';
 
 describe('LLMRelay', () => {
@@ -278,6 +280,67 @@ describe('LLMRelay', () => {
         global.fetch = originalFetch;
         if (saved === undefined) delete process.env.OPENROUTER_API_KEY;
         else process.env.OPENROUTER_API_KEY = saved;
+      }
+    });
+
+    it('reads updated API keys from the host config store on each request', async () => {
+      const eventStore = new EventStore(':memory:');
+      const configStore = new LLMConfigStore(eventStore.db);
+      const originalFetch = global.fetch;
+      const seenAuthHeaders: string[] = [];
+      const seenModels: string[] = [];
+
+      global.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+        const headers = init?.headers as Record<string, string> | undefined;
+        seenAuthHeaders.push(headers?.authorization ?? '');
+        const parsed = JSON.parse(String(init?.body ?? '{}')) as { model?: string };
+        seenModels.push(parsed.model ?? '');
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      };
+
+      try {
+        configStore.upsert('openrouter', {
+          apiKey: 'first-key',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          model: 'moonshotai/kimi-k2',
+        });
+
+        const relay = new LLMRelay(configStore);
+        await relay.forward({
+          provider: 'openrouter',
+          method: 'POST',
+          path: '/chat/completions',
+          headers: { 'content-type': 'application/json' },
+          body: '{"model":"moonshotai/kimi-k2","messages":[]}',
+        });
+
+        configStore.upsert('openrouter', {
+          apiKey: 'second-key',
+          model: 'qwen/qwen3.5-flash-02-23',
+        });
+
+        await relay.forward({
+          provider: 'openrouter',
+          method: 'POST',
+          path: '/chat/completions',
+          headers: { 'content-type': 'application/json' },
+          body: '{"model":"moonshotai/kimi-k2","messages":[]}',
+        });
+
+        expect(seenAuthHeaders).toEqual([
+          'Bearer first-key',
+          'Bearer second-key',
+        ]);
+        expect(seenModels).toEqual([
+          'moonshotai/kimi-k2',
+          'qwen/qwen3.5-flash-02-23',
+        ]);
+      } finally {
+        global.fetch = originalFetch;
+        eventStore.close();
       }
     });
   });

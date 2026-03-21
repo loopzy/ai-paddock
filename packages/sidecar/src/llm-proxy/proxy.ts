@@ -161,19 +161,6 @@ export class LLMProxy {
     // ── Vault: mask sensitive data ──
     const { masked: maskedBody, secretsFound, categories } = this.vault.mask(reqBody);
 
-    if (secretsFound > 0) {
-      await this.reporter.report('llm.request', {
-        provider,
-        model: extractModel(maskedBody),
-        messageCount: extractMessageCount(maskedBody),
-        toolCount: extractToolCount(maskedBody),
-        messagesPreview: extractMessagesPreview(maskedBody),
-        vault: { secretsMasked: secretsFound, categories },
-      });
-    } else {
-      await this.reportLLMRequest(provider, maskedBody);
-    }
-
     // Forward to Control Plane
     const startTime = Date.now();
     try {
@@ -183,8 +170,17 @@ export class LLMProxy {
         body: JSON.stringify({ provider, method: req.method, path: apiPath, headers: filterHeaders(req.headers), body: maskedBody, sessionId: this.sessionId }),
       });
 
-      const result = await upstream.json() as { status: number; headers: Record<string, string>; body: string };
+      const result = await upstream.json() as {
+        status: number;
+        headers: Record<string, string>;
+        body: string;
+        effectiveBody?: string;
+        effectiveModel?: string;
+      };
       const durationMs = Date.now() - startTime;
+      const effectiveBody = typeof result.effectiveBody === 'string' && result.effectiveBody ? result.effectiveBody : maskedBody;
+
+      await this.reportForwardedLLMRequest(provider, effectiveBody, secretsFound, categories);
 
       // ── Detect upstream error (missing API key, provider down, etc.) ──
       if (result.status >= 400) {
@@ -205,12 +201,19 @@ export class LLMProxy {
       }
 
       // Report LLM response and restore masked secrets
-      await this.reportLLMResponse(provider, result.body, durationMs, result.headers['content-type']);
+      await this.reportLLMResponse(
+        provider,
+        result.body,
+        durationMs,
+        result.headers['content-type'],
+        result.effectiveModel || extractModel(effectiveBody),
+      );
       const restoredBody = this.vault.unmask(result.body);
       res.writeHead(result.status, result.headers);
       res.end(restoredBody);
     } catch (err) {
       console.error('LLM Proxy forward error:', err);
+      await this.reportForwardedLLMRequest(provider, maskedBody, secretsFound, categories);
       await this.reporter.report('amp.agent.error' as any, {
         agent: 'sidecar-llm-proxy',
         category: 'network',
@@ -256,8 +259,29 @@ export class LLMProxy {
     } catch { /* skip */ }
   }
 
-  private async reportLLMResponse(provider: string, body: string, durationMs: number, contentType = '') {
-    const summary = parseLLMResponseBody(body, contentType);
+  private async reportForwardedLLMRequest(
+    provider: string,
+    body: string,
+    secretsFound: number,
+    categories: string[],
+  ) {
+    if (secretsFound > 0) {
+      await this.reporter.report('llm.request', {
+        provider,
+        model: extractModel(body),
+        messageCount: extractMessageCount(body),
+        toolCount: extractToolCount(body),
+        messagesPreview: extractMessagesPreview(body),
+        vault: { secretsMasked: secretsFound, categories },
+      });
+      return;
+    }
+
+    await this.reportLLMRequest(provider, body);
+  }
+
+  private async reportLLMResponse(provider: string, body: string, durationMs: number, contentType = '', requestModel = 'unknown') {
+    const summary = parseLLMResponseBody(body, contentType, requestModel);
     if (!summary) return;
 
     await this.reporter.report('llm.response', {
@@ -319,27 +343,27 @@ interface LLMResponseSummary {
   chunkCount: number;
 }
 
-function parseLLMResponseBody(body: string, contentType = ''): LLMResponseSummary | null {
+function parseLLMResponseBody(body: string, contentType = '', fallbackModel = 'unknown'): LLMResponseSummary | null {
   const trimmed = body.trim();
   if (!trimmed) return null;
 
-  const asJson = parseJsonLLMResponse(body);
+  const asJson = parseJsonLLMResponse(body, fallbackModel);
   if (asJson) return asJson;
 
   if (contentType.toLowerCase().includes('text/event-stream') || trimmed.startsWith('data:')) {
-    return parseSseLLMResponse(body);
+    return parseSseLLMResponse(body, fallbackModel);
   }
 
   return null;
 }
 
-function parseJsonLLMResponse(body: string): LLMResponseSummary | null {
+function parseJsonLLMResponse(body: string, fallbackModel = 'unknown'): LLMResponseSummary | null {
   try {
     const parsed = JSON.parse(body) as Record<string, any>;
     const usage = parsed.usage ?? {};
     const content = extractResponseContent(parsed);
     return {
-      model: typeof parsed.model === 'string' ? parsed.model : 'unknown',
+      model: typeof parsed.model === 'string' && parsed.model ? parsed.model : fallbackModel,
       tokensIn: Number(usage.input_tokens ?? usage.prompt_tokens ?? 0),
       tokensOut: Number(usage.output_tokens ?? usage.completion_tokens ?? 0),
       content,
@@ -351,13 +375,15 @@ function parseJsonLLMResponse(body: string): LLMResponseSummary | null {
   }
 }
 
-function parseSseLLMResponse(body: string): LLMResponseSummary | null {
+function parseSseLLMResponse(body: string, fallbackModel = 'unknown'): LLMResponseSummary | null {
   const lines = body.split(/\r?\n/);
-  let model = 'unknown';
+  let model = fallbackModel;
   let tokensIn = 0;
   let tokensOut = 0;
   const content: unknown[] = [];
   let chunkCount = 0;
+  const responseFunctionCalls = new Map<string, { id: string; name?: string; arguments: string[] }>();
+  const seenContentKinds = new Set<'text' | 'reasoning' | 'tool'>();
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
@@ -368,6 +394,28 @@ function parseSseLLMResponse(body: string): LLMResponseSummary | null {
 
     try {
       const parsed = JSON.parse(payload) as Record<string, any>;
+      if (applyResponsesSseEvent(parsed, {
+        setModel: (value) => { model = value; },
+        setUsage: (input, output) => {
+          tokensIn = input;
+          tokensOut = output;
+        },
+        pushContent: (items) => {
+          content.push(...items);
+          for (const item of items) {
+            const kind = detectContentKind(item);
+            if (kind) {
+              seenContentKinds.add(kind);
+            }
+          }
+        },
+        incrementChunk: () => { chunkCount += 1; },
+        functionCalls: responseFunctionCalls,
+        hasContentKind: (kind) => seenContentKinds.has(kind),
+      })) {
+        continue;
+      }
+
       chunkCount += 1;
       if (typeof parsed.model === 'string' && parsed.model) {
         model = parsed.model;
@@ -391,6 +439,237 @@ function parseSseLLMResponse(body: string): LLMResponseSummary | null {
     streamed: true,
     chunkCount,
   };
+}
+
+function applyResponsesSseEvent(
+  parsed: Record<string, any>,
+  state: {
+    setModel: (value: string) => void;
+    setUsage: (tokensIn: number, tokensOut: number) => void;
+    pushContent: (items: unknown[]) => void;
+    incrementChunk: () => void;
+    functionCalls: Map<string, { id: string; name?: string; arguments: string[] }>;
+    hasContentKind: (kind: 'text' | 'reasoning' | 'tool') => boolean;
+  },
+): boolean {
+  const eventType = typeof parsed.type === 'string' ? parsed.type : '';
+  if (!eventType.startsWith('response.')) {
+    return false;
+  }
+
+  state.incrementChunk();
+
+  const response = parsed.response && typeof parsed.response === 'object'
+    ? (parsed.response as Record<string, any>)
+    : undefined;
+  if (typeof response?.model === 'string' && response.model) {
+    state.setModel(response.model);
+  }
+
+  const usage = response?.usage;
+  if (usage && typeof usage === 'object') {
+    state.setUsage(
+      Number(usage.input_tokens ?? usage.prompt_tokens ?? 0),
+      Number(usage.output_tokens ?? usage.completion_tokens ?? 0),
+    );
+  }
+
+  if (eventType === 'response.output_text.delta' && typeof parsed.delta === 'string' && parsed.delta) {
+    state.pushContent([{ type: 'text', text: parsed.delta }]);
+    return true;
+  }
+
+  if (eventType === 'response.output_text.done' && typeof parsed.text === 'string' && parsed.text) {
+    if (state.hasContentKind('text')) {
+      return true;
+    }
+    state.pushContent([{ type: 'text', text: parsed.text }]);
+    return true;
+  }
+
+  if (eventType === 'response.reasoning_text.delta' && typeof parsed.delta === 'string' && parsed.delta) {
+    state.pushContent([{ type: 'reasoning', text: parsed.delta }]);
+    return true;
+  }
+
+  if (eventType === 'response.reasoning_text.done' && typeof parsed.text === 'string' && parsed.text) {
+    if (state.hasContentKind('reasoning')) {
+      return true;
+    }
+    state.pushContent([{ type: 'reasoning', text: parsed.text }]);
+    return true;
+  }
+
+  if (eventType === 'response.content_part.added' || eventType === 'response.content_part.done') {
+    const part = parsed.part && typeof parsed.part === 'object' ? (parsed.part as Record<string, any>) : undefined;
+    if (part) {
+      const extracted = filterMissingContentKinds(extractResponsesPart(part), state.hasContentKind);
+      if (extracted.length > 0) {
+        state.pushContent(extracted);
+      }
+    }
+    return true;
+  }
+
+  if (eventType === 'response.output_item.added') {
+    const item = parsed.item && typeof parsed.item === 'object' ? (parsed.item as Record<string, any>) : undefined;
+    if (item?.type === 'function_call' && typeof item.id === 'string') {
+      state.functionCalls.set(item.id, {
+        id: item.id,
+        name: typeof item.name === 'string' ? item.name : undefined,
+        arguments: typeof item.arguments === 'string' && item.arguments ? [item.arguments] : [],
+      });
+    }
+    if (item) {
+      const extracted = filterMissingContentKinds(extractResponsesOutput([item]), state.hasContentKind);
+      if (extracted.length > 0) {
+        state.pushContent(extracted);
+      }
+    }
+    return true;
+  }
+
+  if (eventType === 'response.output_item.done') {
+    const item = parsed.item && typeof parsed.item === 'object' ? (parsed.item as Record<string, any>) : undefined;
+    if (item?.type === 'function_call' && typeof item.id === 'string') {
+      const existing = state.functionCalls.get(item.id) ?? {
+        id: item.id,
+        arguments: [],
+      };
+      if (typeof item.name === 'string' && item.name) {
+        existing.name = item.name;
+      }
+      if (typeof item.arguments === 'string' && item.arguments) {
+        existing.arguments = [item.arguments];
+      }
+      state.functionCalls.set(item.id, existing);
+    }
+    if (item) {
+      const extracted = filterMissingContentKinds(extractResponsesOutput([item]), state.hasContentKind);
+      if (extracted.length > 0) {
+        state.pushContent(extracted);
+      }
+    }
+    return true;
+  }
+
+  if (eventType === 'response.function_call_arguments.delta' && typeof parsed.item_id === 'string' && typeof parsed.delta === 'string') {
+    const entry = state.functionCalls.get(parsed.item_id) ?? {
+      id: parsed.item_id,
+      arguments: [],
+    };
+    entry.arguments.push(parsed.delta);
+    state.functionCalls.set(parsed.item_id, entry);
+    return true;
+  }
+
+  if (eventType === 'response.function_call_arguments.done' && typeof parsed.item_id === 'string') {
+    const entry = state.functionCalls.get(parsed.item_id);
+    const name =
+      typeof parsed.name === 'string'
+        ? parsed.name
+        : entry?.name;
+    if (name) {
+      state.pushContent([{
+        type: 'function',
+        id: parsed.item_id,
+        function: {
+          name,
+          arguments: (entry?.arguments ?? []).join(''),
+        },
+      }]);
+    }
+    return true;
+  }
+
+  if (eventType === 'response.completed' && Array.isArray(response?.output)) {
+    const extracted = filterMissingContentKinds(extractResponsesOutput(response.output), state.hasContentKind);
+    if (extracted.length > 0) {
+      state.pushContent(extracted);
+    }
+    return true;
+  }
+
+  return true;
+}
+
+function extractResponsesPart(part: Record<string, any>): unknown[] {
+  if ((part.type === 'output_text' || part.type === 'text') && typeof part.text === 'string' && part.text) {
+    return [{ type: 'text', text: part.text }];
+  }
+  if ((part.type === 'reasoning_text' || part.type === 'reasoning') && typeof part.text === 'string' && part.text) {
+    return [{ type: 'reasoning', text: part.text }];
+  }
+  return [];
+}
+
+function detectContentKind(item: unknown): 'text' | 'reasoning' | 'tool' | null {
+  if (!item || typeof item !== 'object') return null;
+  const record = item as Record<string, unknown>;
+  if (record.type === 'text') return 'text';
+  if (record.type === 'reasoning') return 'reasoning';
+  if (record.type === 'tool_use' || record.type === 'function') return 'tool';
+  return null;
+}
+
+function filterMissingContentKinds(
+  items: unknown[],
+  hasContentKind: (kind: 'text' | 'reasoning' | 'tool') => boolean,
+): unknown[] {
+  return items.filter((item) => {
+    const kind = detectContentKind(item);
+    return !kind || !hasContentKind(kind);
+  });
+}
+
+function extractResponsesOutput(output: unknown[]): unknown[] {
+  const collected: unknown[] = [];
+  for (const item of output) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, any>;
+
+    if (record.type === 'message' && Array.isArray(record.content)) {
+      for (const part of record.content) {
+        if (!part || typeof part !== 'object') continue;
+        const block = part as Record<string, any>;
+        if ((block.type === 'output_text' || block.type === 'text') && typeof block.text === 'string' && block.text) {
+          collected.push({ type: 'text', text: block.text });
+        }
+        if ((block.type === 'reasoning_text' || block.type === 'reasoning') && typeof block.text === 'string' && block.text) {
+          collected.push({ type: 'reasoning', text: block.text });
+        }
+      }
+    }
+
+    if (record.type === 'reasoning') {
+      if (Array.isArray(record.summary)) {
+        for (const part of record.summary) {
+          if (part && typeof part === 'object' && typeof (part as Record<string, any>).text === 'string') {
+            collected.push({ type: 'reasoning', text: (part as Record<string, any>).text });
+          }
+        }
+      }
+      if (Array.isArray(record.content)) {
+        for (const part of record.content) {
+          if (part && typeof part === 'object' && typeof (part as Record<string, any>).text === 'string') {
+            collected.push({ type: 'reasoning', text: (part as Record<string, any>).text });
+          }
+        }
+      }
+    }
+
+    if (record.type === 'function_call' && typeof record.name === 'string') {
+      collected.push({
+        type: 'function',
+        id: typeof record.id === 'string' ? record.id : undefined,
+        function: {
+          name: record.name,
+          arguments: typeof record.arguments === 'string' ? record.arguments : '',
+        },
+      });
+    }
+  }
+  return collected;
 }
 
 function extractResponseContent(parsed: Record<string, any>): unknown[] {
@@ -528,6 +807,7 @@ function extractMessagesPreview(body: string): Array<{ role: string; text: strin
 function extractResponsePreview(content: unknown[]): string {
   const parts: string[] = [];
   const textBuffer: string[] = [];
+  const reasoningBuffer: string[] = [];
 
   const flushTextBuffer = () => {
     const merged = mergeTextFragments(textBuffer);
@@ -542,6 +822,10 @@ function extractResponsePreview(content: unknown[]): string {
     const record = block as Record<string, unknown>;
     if (record.type === 'text' && typeof record.text === 'string') {
       textBuffer.push(record.text);
+      continue;
+    }
+    if (record.type === 'reasoning' && typeof record.text === 'string') {
+      reasoningBuffer.push(record.text);
       continue;
     }
 
@@ -562,5 +846,10 @@ function extractResponsePreview(content: unknown[]): string {
   flushTextBuffer();
 
   const preview = parts.join('\n').trim();
-  return preview ? truncatePreview(preview, 400) : '';
+  if (preview) {
+    return truncatePreview(preview, 400);
+  }
+
+  const reasoningPreview = mergeTextFragments(reasoningBuffer).trim();
+  return reasoningPreview ? truncatePreview(`[reasoning] ${reasoningPreview}`, 400) : '';
 }

@@ -175,6 +175,143 @@ describe('Control Plane user journeys', () => {
     }
   });
 
+  it('persists dashboard model overrides and reuses them as agent defaults', async () => {
+    const ctx = await createRouteTestContext();
+
+    try {
+      const createResponse = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/llm-config',
+        payload: {
+          provider: 'openrouter',
+          apiKey: 'or-test',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          model: 'deepseek/deepseek-chat',
+        },
+      });
+
+      expect(createResponse.statusCode).toBe(200);
+
+      const updateResponse = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/llm-config',
+        payload: {
+          provider: 'openrouter',
+          model: 'moonshotai/kimi-k2',
+        },
+      });
+
+      expect(updateResponse.statusCode).toBe(200);
+
+      const listResponse = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/llm-config',
+      });
+      expect(listResponse.statusCode).toBe(200);
+      expect(listResponse.json().providers).toEqual([
+        expect.objectContaining({
+          provider: 'openrouter',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          model: 'moonshotai/kimi-k2',
+        }),
+      ]);
+
+      const healthResponse = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/health',
+      });
+      expect(healthResponse.statusCode).toBe(200);
+      expect(healthResponse.json().agentDefaults).toEqual({
+        provider: 'openrouter',
+        model: 'moonshotai/kimi-k2',
+      });
+    } finally {
+      await ctx.app.close();
+      ctx.eventStore.close();
+    }
+  });
+
+  it('applies updated dashboard API keys to llm relay requests without restarting the app', async () => {
+    const ctx = await createRouteTestContext();
+    const seenAuthHeaders: string[] = [];
+    const seenModels: string[] = [];
+    const originalFetch = global.fetch;
+
+    global.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      seenAuthHeaders.push(headers?.authorization ?? '');
+      const parsed = JSON.parse(String(init?.body ?? '{}')) as { model?: string };
+      seenModels.push(parsed.model ?? '');
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+
+    try {
+      const createResponse = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/llm-config',
+        payload: {
+          provider: 'openrouter',
+          apiKey: 'first-key',
+          model: 'moonshotai/kimi-k2',
+        },
+      });
+      expect(createResponse.statusCode).toBe(200);
+
+      const firstRelayResponse = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/llm/proxy',
+        payload: {
+          provider: 'openrouter',
+          method: 'POST',
+          path: '/chat/completions',
+          headers: { 'content-type': 'application/json' },
+          body: '{"model":"moonshotai/kimi-k2","messages":[]}',
+        },
+      });
+      expect(firstRelayResponse.statusCode).toBe(200);
+
+      const updateResponse = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/llm-config',
+        payload: {
+          provider: 'openrouter',
+          apiKey: 'second-key',
+          model: 'qwen/qwen3.5-flash-02-23',
+        },
+      });
+      expect(updateResponse.statusCode).toBe(200);
+
+      const secondRelayResponse = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/llm/proxy',
+        payload: {
+          provider: 'openrouter',
+          method: 'POST',
+          path: '/chat/completions',
+          headers: { 'content-type': 'application/json' },
+          body: '{"model":"moonshotai/kimi-k2","messages":[]}',
+        },
+      });
+      expect(secondRelayResponse.statusCode).toBe(200);
+
+      expect(seenAuthHeaders).toEqual([
+        'Bearer first-key',
+        'Bearer second-key',
+      ]);
+      expect(seenModels).toEqual([
+        'moonshotai/kimi-k2',
+        'qwen/qwen3.5-flash-02-23',
+      ]);
+    } finally {
+      global.fetch = originalFetch;
+      await ctx.app.close();
+      ctx.eventStore.close();
+    }
+  });
+
   it('blocks Dashboard commands until an agent reports AMP readiness', async () => {
     const ctx = await createRouteTestContext();
     let socket: Awaited<ReturnType<typeof openSessionSocket>> | null = null;

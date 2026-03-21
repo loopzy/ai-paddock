@@ -227,6 +227,13 @@ export function getDefaultAgentLLMConfig(env: NodeJS.ProcessEnv = process.env, c
       const dbConfigs = configStore.list();
       if (dbConfigs.length > 0) {
         preset = getProviderPreset(dbConfigs[0].provider);
+        if (preset) {
+          const storedConfig = configStore.get(preset.id);
+          return {
+            provider: preset.id,
+            model: explicitModel || storedConfig?.model || preset.defaultModel,
+          };
+        }
       }
     }
   }
@@ -257,9 +264,10 @@ export function resolveAgentLLMConfig(
   if (!preset) {
     throw new Error(`Unsupported LLM provider: ${provider}`);
   }
+  const storedModel = configStore?.get(preset.id)?.model?.trim();
 
   return {
     provider: preset.id,
-    model: selection?.model?.trim() || defaults.model || preset.defaultModel,
+    model: selection?.model?.trim() || storedModel || defaults.model || preset.defaultModel,
   };
 }

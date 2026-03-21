@@ -582,6 +582,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
         case 'amp.llm.request': {
           const provider = getString(payload.provider) ?? 'provider';
           const model = getString(payload.model) ?? 'model';
+          const promptPreview = formatMessageTranscript(payload.messagesPreview);
           const step = createStep(
             event,
             'llm-request',
@@ -589,7 +590,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
             provider,
             [],
             undefined,
-            undefined,
+            promptPreview,
             undefined,
             appendRawSection(undefined, 'Request payload', payload),
             'Turn payload',

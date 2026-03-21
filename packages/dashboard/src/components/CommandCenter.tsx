@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildCommandRuns, type CommandEventLike, type CommandStep, type CommandTag } from '../command-groups.js';
 import { MarkdownContent } from './MarkdownContent.js';
+import { ExpandableTextBlock } from './ExpandableTextBlock.js';
 
 interface PendingApproval {
   id: string;
@@ -145,9 +146,13 @@ function ExpandableRaw({
 function ExpandableMarkdown({
   content,
   previewChars = 420,
+  expandLabel = 'Expand full reply',
+  collapseLabel = 'Collapse full reply',
 }: {
   content: string;
   previewChars?: number;
+  expandLabel?: string;
+  collapseLabel?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const trimmed = content.trim();
@@ -164,7 +169,7 @@ function ExpandableMarkdown({
             onClick={() => setExpanded((value) => !value)}
             className="rounded-full border border-stone-200 bg-white px-3 py-1 text-[11px] font-medium text-stone-500 transition hover:border-stone-300 hover:text-stone-900"
           >
-            {expanded ? 'Collapse full reply' : 'Expand full reply'}
+            {expanded ? collapseLabel : expandLabel}
           </button>
         </div>
       )}
@@ -172,15 +177,56 @@ function ExpandableMarkdown({
   );
 }
 
+function markdownLabelsForStep(step: CommandStep): { expandLabel: string; collapseLabel: string } {
+  switch (step.kind) {
+    case 'llm-request':
+      return { expandLabel: 'Expand full prompt', collapseLabel: 'Collapse prompt' };
+    case 'llm-response':
+    case 'agent-message':
+      return { expandLabel: 'Expand full reply', collapseLabel: 'Collapse full reply' };
+    case 'agent-error':
+      return { expandLabel: 'Expand full error', collapseLabel: 'Collapse error' };
+    default:
+      return { expandLabel: 'Expand full content', collapseLabel: 'Collapse content' };
+  }
+}
+
+function detailLabelsForStep(step: CommandStep): { expandLabel: string; collapseLabel: string } {
+  switch (step.kind) {
+    case 'llm-request':
+      return { expandLabel: 'Expand full prompt', collapseLabel: 'Collapse prompt' };
+    case 'tool-intent':
+    case 'tool-result':
+      return { expandLabel: 'Expand full details', collapseLabel: 'Collapse details' };
+    case 'gate-verdict':
+      return { expandLabel: 'Expand full policy details', collapseLabel: 'Collapse policy details' };
+    default:
+      return { expandLabel: 'Expand full details', collapseLabel: 'Collapse details' };
+  }
+}
+
+function summaryLabelsForStep(step: CommandStep): { expandLabel: string; collapseLabel: string } {
+  switch (step.kind) {
+    case 'llm-request':
+      return { expandLabel: 'Expand summary', collapseLabel: 'Collapse summary' };
+    case 'agent-error':
+      return { expandLabel: 'Expand error summary', collapseLabel: 'Collapse error summary' };
+    default:
+      return { expandLabel: 'Expand summary', collapseLabel: 'Collapse summary' };
+  }
+}
+
 function StepCard({ step, depth }: { step: CommandStep; depth: number }) {
   const showSummary = Boolean(step.summary && (!step.body || collapseWhitespace(step.summary) !== collapseWhitespace(step.body)));
   const showDetail =
     Boolean(step.detail) &&
-    step.kind !== 'llm-request' &&
     step.kind !== 'agent-message' &&
     (!step.body || collapseWhitespace(step.detail!) !== collapseWhitespace(step.body));
   const titleClass = depth === 0 ? 'text-sm' : 'text-[13px]';
   const summaryClass = depth === 0 ? 'text-sm leading-6' : 'text-[13px] leading-6';
+  const bodyLabels = markdownLabelsForStep(step);
+  const detailLabels = detailLabelsForStep(step);
+  const summaryLabels = summaryLabelsForStep(step);
   return (
     <div className="min-w-0 flex-1">
       <div className="flex flex-wrap items-center gap-2">
@@ -197,16 +243,36 @@ function StepCard({ step, depth }: { step: CommandStep; depth: number }) {
         </div>
       )}
       {showSummary && step.summary && (
-        <div className={`mt-2 whitespace-pre-wrap ${summaryClass} text-stone-700`}>{step.summary}</div>
+        <div className="mt-2">
+          <ExpandableTextBlock
+            content={step.summary}
+            previewChars={240}
+            preserveWhitespace
+            expandLabel={summaryLabels.expandLabel}
+            collapseLabel={summaryLabels.collapseLabel}
+            textClassName={`${summaryClass} text-stone-700`}
+          />
+        </div>
       )}
       {step.body && (
         <div className="mt-3 whitespace-pre-wrap rounded-[22px] border border-stone-200 bg-white px-4 py-3 text-sm leading-7 text-stone-900 shadow-[0_6px_18px_rgba(80,60,30,0.05)]">
-          <ExpandableMarkdown content={step.body} />
+          <ExpandableMarkdown
+            content={step.body}
+            expandLabel={bodyLabels.expandLabel}
+            collapseLabel={bodyLabels.collapseLabel}
+          />
         </div>
       )}
       {showDetail && step.detail && (
         <div className="mt-3 rounded-[20px] border border-stone-200 bg-stone-50 px-4 py-3 text-[12px] leading-6 text-stone-600">
-          <div className="whitespace-pre-wrap">{step.detail}</div>
+          <ExpandableTextBlock
+            content={step.detail}
+            previewChars={360}
+            preserveWhitespace
+            expandLabel={detailLabels.expandLabel}
+            collapseLabel={detailLabels.collapseLabel}
+            textClassName="text-[12px] leading-6 text-stone-600"
+          />
         </div>
       )}
       <ExpandableRaw label={step.rawLabel ?? 'Raw content'} content={step.rawDetail} />
@@ -277,7 +343,16 @@ function ApprovalCard({
         )}
       </div>
       <div className="mt-2 text-sm text-stone-800">{request.toolName}</div>
-      <div className="mt-1 text-xs text-stone-500">{request.reason}</div>
+      <div className="mt-1 text-xs text-stone-500">
+        <ExpandableTextBlock
+          content={request.reason}
+          previewChars={220}
+          expandLabel="Expand full reason"
+          collapseLabel="Collapse reason"
+          textClassName="text-xs text-stone-500"
+          buttonClassName="bg-amber-50"
+        />
+      </div>
       <ExpandableRaw label="Request payload" content={JSON.stringify(request.toolArgs, null, 2)} />
       {onDecide && (
         <div className="mt-3 flex gap-2">
@@ -316,11 +391,19 @@ export function CommandCenter({
 }) {
   const commandRuns = buildCommandRuns(events);
   const [expandedRunIds, setExpandedRunIds] = useState<string[] | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
 
   const visibleExpandedRunIds = useMemo(() => {
     if (expandedRunIds) return expandedRunIds;
     return commandRuns.filter((run, index) => run.active || index === 0).map((run) => run.id);
   }, [commandRuns, expandedRunIds]);
+
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node || !stickToBottomRef.current) return;
+    node.scrollTop = node.scrollHeight;
+  }, [events.length, commandRuns.length]);
 
   if (commandRuns.length === 0) {
     return (
@@ -333,7 +416,16 @@ export function CommandCenter({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-5">
+    <div
+      ref={containerRef}
+      data-testid="command-center-scroll"
+      className="flex-1 overflow-y-auto px-6 py-5"
+      onScroll={(event) => {
+        const node = event.currentTarget;
+        const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
+        stickToBottomRef.current = distance < 80;
+      }}
+    >
       <div className="space-y-4">
         {commandRuns.map((run) => {
           const expanded = visibleExpandedRunIds.includes(run.id);
@@ -354,9 +446,28 @@ export function CommandCenter({
                       </code>
                     )}
                   </div>
-                  <h3 className="mt-3 text-base font-semibold text-stone-900">{run.command}</h3>
+                  <div className="mt-3" role="heading" aria-level={3}>
+                    <ExpandableTextBlock
+                      content={run.command}
+                      previewChars={180}
+                      preserveWhitespace
+                      expandLabel="Expand full command"
+                      collapseLabel="Collapse command"
+                      textClassName="text-base font-semibold text-stone-900"
+                    />
+                  </div>
                   {run.active && run.currentActivity && (
-                    <div className="mt-2 text-sm text-amber-700">Current activity: {run.currentActivity}</div>
+                    <div className="mt-2">
+                      <ExpandableTextBlock
+                        content={`Current activity: ${run.currentActivity}`}
+                        previewChars={220}
+                        preserveWhitespace
+                        expandLabel="Expand current activity"
+                        collapseLabel="Collapse current activity"
+                        textClassName="text-sm text-amber-700"
+                        buttonClassName="bg-white/70"
+                      />
+                    </div>
                   )}
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-stone-500">
                     <span>{run.toolsUsed} tools</span>
@@ -434,7 +545,17 @@ export function CommandCenter({
               {run.latestError && run.status !== 'completed' && (
                 <div className="mt-4 rounded-[24px] border border-rose-200 bg-rose-50 p-4">
                   <div className="text-[11px] uppercase tracking-wide text-rose-700">Latest Error</div>
-                  <div className="mt-2 text-sm leading-6 text-rose-900">{run.latestError}</div>
+                  <div className="mt-2 text-sm leading-6 text-rose-900">
+                    <ExpandableTextBlock
+                      content={run.latestError}
+                      previewChars={280}
+                      expandLabel="Expand full error"
+                      collapseLabel="Collapse error"
+                      preserveWhitespace
+                      textClassName="text-sm leading-6 text-rose-900"
+                      buttonClassName="bg-rose-50"
+                    />
+                  </div>
                 </div>
               )}
 

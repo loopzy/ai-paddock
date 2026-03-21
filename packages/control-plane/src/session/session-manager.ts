@@ -268,19 +268,18 @@ export class SessionManager {
       throw new Error(`Session ${sessionId} already started`);
     }
     const driver = this.getDriver(session.sandboxType);
+    const boxName = `paddock-${sessionId}`;
 
     try {
-      session.vmId = undefined;
-      session.guiPorts = undefined;
-      session.agentTransport = undefined;
-      session.agentSessionKey = undefined;
+      await this.destroyResidualSandbox(driver, session, boxName);
+      this.clearSessionRuntimeState(session);
       this.eventStore.append(session.id, 'amp.session.start', { phase: 'vm.init', message: 'Initializing VM...' });
       this.eventStore.append(session.id, 'amp.session.start', {
         phase: 'vm.image',
         message: getSandboxStartupMessage(session.sandboxType),
       });
 
-      const vmId = await driver.createBox({ name: `paddock-${sessionId}`, sandboxType: session.sandboxType });
+      const vmId = await driver.createBox({ name: boxName, sandboxType: session.sandboxType });
 
       session.vmId = vmId;
       session.status = 'running';
@@ -305,7 +304,11 @@ export class SessionManager {
       this.eventStore.append(session.id, 'amp.session.start', { phase: 'sandbox_ready', message: 'Sandbox ready' });
     } catch (err) {
       const error = err as Error;
-      this.updateSessionStatus(session, 'error');
+      await this.destroyResidualSandbox(driver, session, boxName);
+      this.clearSessionRuntimeState(session);
+      session.status = 'error';
+      session.updatedAt = Date.now();
+      this.db.prepare('UPDATE sessions SET status = ?, vm_id = NULL, updated_at = ? WHERE id = ?').run(session.status, session.updatedAt, session.id);
       this.eventStore.append(sessionId, 'session.status', { status: 'error', error: `Failed to start sandbox: ${error.message}` });
       throw err;
     }
@@ -1020,6 +1023,27 @@ export class SessionManager {
     session.status = status;
     session.updatedAt = Date.now();
     this.db.prepare('UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?').run(session.status, session.updatedAt, session.id);
+  }
+
+  private clearSessionRuntimeState(session: RuntimeSession) {
+    session.vmId = undefined;
+    session.guiPorts = undefined;
+    session.agentTransport = undefined;
+    session.agentSessionKey = undefined;
+  }
+
+  private async destroyResidualSandbox(driver: SandboxDriver, session: RuntimeSession, boxName: string): Promise<void> {
+    const targets = new Set<string>();
+    if (session.vmId) targets.add(session.vmId);
+    targets.add(boxName);
+
+    for (const target of targets) {
+      try {
+        await driver.destroyBox(target);
+      } catch {
+        // best effort cleanup only
+      }
+    }
   }
 
   private deriveDisplayStatus(session: RuntimeSession): Session['displayStatus'] {

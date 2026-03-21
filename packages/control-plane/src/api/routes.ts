@@ -153,13 +153,19 @@ export function registerRoutes(app: FastifyInstance, deps: Deps) {
     return { providers: llmConfigStore.list() };
   });
 
-  app.post<{ Body: { provider: string; apiKey: string; baseUrl?: string } }>('/api/llm-config', async (req) => {
-    const { provider, apiKey, baseUrl } = req.body;
-    if (!provider || !apiKey) {
-      return { error: 'provider and apiKey are required' };
+  app.post<{ Body: { provider: string; apiKey?: string; baseUrl?: string | null; model?: string | null } }>('/api/llm-config', async (req, reply) => {
+    const { provider, apiKey, baseUrl, model } = req.body;
+    if (!provider?.trim()) {
+      reply.code(400);
+      return { error: 'provider is required' };
     }
-    llmConfigStore.set(provider, apiKey, baseUrl);
-    return { ok: true, provider };
+    const existing = llmConfigStore.get(provider);
+    if (!existing && !apiKey?.trim()) {
+      reply.code(400);
+      return { error: 'apiKey is required when creating a provider configuration' };
+    }
+    llmConfigStore.upsert(provider, { apiKey, baseUrl, model });
+    return { ok: true, provider, model: model ?? existing?.model ?? null };
   });
 
   app.delete<{ Params: { provider: string } }>('/api/llm-config/:provider', async (req) => {

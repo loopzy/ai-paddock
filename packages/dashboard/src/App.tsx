@@ -760,9 +760,19 @@ export function App() {
 
   const startSession = async () => {
     if (!sessionId) return;
+    setCreateError(null);
     setDeploying(true);
-    await fetch(`/api/sessions/${sessionId}/start`, { method: 'POST' });
-    refreshSessions();
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/start`, { method: 'POST' });
+      if (!res.ok) {
+        throw new Error(await res.text() || `HTTP ${res.status}`);
+      }
+      refreshSessions();
+    } catch (err) {
+      console.error(err);
+      setDeploying(false);
+      refreshSessions();
+    }
   };
 
   const handleHITLDecision = async (requestId: string, verdict: 'approved' | 'rejected') => {
