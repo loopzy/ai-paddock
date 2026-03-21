@@ -17,7 +17,27 @@ interface DeployStage {
 const STAGES: DeployStage[] = [
   { label: 'Initialize VM', phases: ['vm.init', 'vm.image', 'vm.ready'], icon: 'init' },
   { label: 'Deploy Sidecar', phases: ['sidecar', 'sidecar.copy', 'sidecar.node', 'sidecar.shims', 'sidecar.start', 'sidecar.verify', 'env', 'sandbox_ready'], icon: 'sidecar' },
-  { label: 'Deploy Agent', phases: ['agent.node', 'agent.copy_adapter', 'agent.install_python', 'agent.install_adapter', 'agent.starting', 'agent.verify', 'agent_ready'], icon: 'agent' },
+  {
+    label: 'Deploy Agent',
+    phases: [
+      'agent.node',
+      'agent.copy_adapter',
+      'agent.copy_runtime',
+      'agent.copy_source',
+      'agent.install_pnpm',
+      'agent.install_deps',
+      'agent.build_source',
+      'agent.install_python',
+      'agent.install_browser',
+      'agent.browser',
+      'agent.install_adapter',
+      'agent.starting',
+      'agent.verify',
+      'agent.browser_prewarm',
+      'agent_ready',
+    ],
+    icon: 'agent',
+  },
 ];
 
 function StatusIcon({ status }: { status: 'done' | 'active' | 'pending' | 'error' }) {

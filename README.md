@@ -279,24 +279,34 @@ pnpm run prepare:sandbox-rootfs
 
 If you are using an older Docker engine that does not support `host-gateway`, export the proxy directly as `http://host.docker.internal:7890` before running the prepare step.
 
-### Step 6: Prepare Node Runtime & OpenClaw Runtime
+### Step 6: Prepare Node Runtime
+
+The Node runtime is required because OpenClaw runs inside the VM.
 
 ```bash
 # Node.js runtime for inside the VM
 pnpm run prepare:node-runtime
+```
 
-# OpenClaw runtime bundle
+### Step 7: Optional - Build the OpenClaw Runtime Bundle
+
+This step is an optimization for faster startup and more predictable release packaging. It is not required if your priority is maximum compatibility or source-level debugging inside the VM.
+
+If you skip this step, Paddock can still deploy OpenClaw by copying the pinned source tree into the VM and performing the official install/build there.
+
+```bash
+# OpenClaw runtime bundle (optional, for faster startup)
 pnpm run build:openclaw-runtime
 ```
 
-### Step 7: Build Control Plane, Dashboard & Sidecar
+### Step 8: Build Control Plane, Dashboard & Sidecar
 
 ```bash
 pnpm build
 ./scripts/build-sidecar.sh
 ```
 
-### Step 8: Configure LLM Provider
+### Step 9: Configure LLM Provider
 
 #### Option A: Environment Variables
 
@@ -314,7 +324,7 @@ export GOOGLE_API_KEY="your-google-api-key"
 
 After launch, click **"API Keys"** in the Dashboard header to configure providers interactively.
 
-### Step 9: Start the Control Plane
+### Step 10: Start the Control Plane
 
 ```bash
 pnpm run dev:control
@@ -322,7 +332,7 @@ pnpm run dev:control
 
 Default address: `http://localhost:3100`
 
-### Step 10: Start the Dashboard
+### Step 11: Start the Dashboard
 
 Open a new terminal:
 
@@ -332,7 +342,7 @@ pnpm run dev:dashboard
 
 Default address: `http://localhost:3200`
 
-### Step 11: Create a Sandbox
+### Step 12: Create a Sandbox
 
 1. Open the Dashboard at `http://localhost:3200`
 2. Click **"+"** to create a new sandbox
@@ -341,15 +351,20 @@ Default address: `http://localhost:3200`
    - **Computer Box** — GUI Ubuntu XFCE Desktop
 4. Wait for status to change from `Starting` → `Running`
 
-### Step 12: Deploy OpenClaw
+### Step 13: Deploy OpenClaw
 
 1. In the session panel, click **"Deploy Agent"**
-2. Select **OpenClaw (auto-install)**
+2. Select **OpenClaw (auto-install with bundle/source fallback)**
 3. Wait for the agent to report ready
 
-> On first deployment, the install script will set up Chromium inside the VM via `apt` if a browser is not yet available.
+Paddock chooses the deployment path in this order:
 
-### Step 13: Start Using OpenClaw in the Sandbox
+1. **Official runtime bundle** — fastest and best for release builds
+2. **VM source install** — copies the pinned OpenClaw source tree from `OPENCLAW_SRC` or `thirdparty/openclaw`, then installs and builds it inside the VM
+
+> If you built the runtime bundle in Step 7, Paddock uses it first for faster startup. If not, or if you prefer maximum compatibility, Paddock can install OpenClaw from the pinned source tree inside the VM. On first deployment, the install script will also set up Chromium inside the VM via `apt` if a browser is not yet available. The VM source path installs `pnpm` and OpenClaw dependencies inside the VM, so it is slower and may require network access from the sandbox.
+
+### Step 14: Start Using OpenClaw in the Sandbox
 
 Once deployed, send commands to OpenClaw through the Dashboard:
 
@@ -357,7 +372,7 @@ Once deployed, send commands to OpenClaw through the Dashboard:
 - *"Open a webpage in the browser and summarize its content"*
 - *"Set up a simple Python HTTP server in the workspace"*
 
-### Step 14: Observe Execution
+### Step 15: Observe Execution
 
 The Dashboard provides two views:
 

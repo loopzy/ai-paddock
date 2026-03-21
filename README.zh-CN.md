@@ -265,24 +265,34 @@ pnpm run prepare:sandbox-rootfs
 
 如果你使用的是较老的 Docker 版本，不支持 `host-gateway`，可以在执行准备步骤前，手动把代理地址直接写成 `http://host.docker.internal:7890`。
 
-### 第 6 步：准备 Node 运行时与 OpenClaw 运行时
+### 第 6 步：准备 Node 运行时
+
+Node 运行时是必须的，因为 OpenClaw 会在 VM 内部运行。
 
 ```bash
 # VM 内使用的 Node.js 运行时
 pnpm run prepare:node-runtime
+```
 
-# 构建 OpenClaw 运行时 bundle
+### 第 7 步：可选 - 构建 OpenClaw Runtime Bundle
+
+这一步的目的主要是提升启动速度，并让发布构建更稳定可复现。如果你更看重最大兼容性，或者希望在 VM 内直接按源码方式安装和调试 OpenClaw，那么这一步可以跳过。
+
+跳过后，Paddock 仍然可以把固定版本的 OpenClaw 源码复制进 VM，并在 VM 内完成官方安装和构建。
+
+```bash
+# 构建 OpenClaw 运行时 bundle（可选，用于加快启动）
 pnpm run build:openclaw-runtime
 ```
 
-### 第 7 步：构建控制面、Dashboard 与 Sidecar
+### 第 8 步：构建控制面、Dashboard 与 Sidecar
 
 ```bash
 pnpm build
 ./scripts/build-sidecar.sh
 ```
 
-### 第 8 步：配置 LLM 提供商
+### 第 9 步：配置 LLM 提供商
 
 #### 方式 A：环境变量
 
@@ -300,7 +310,7 @@ export GOOGLE_API_KEY="your-google-api-key"
 
 启动后，点击 Dashboard 顶栏的 **"API Keys"** 按钮交互式配置。
 
-### 第 9 步：启动控制面
+### 第 10 步：启动控制面
 
 ```bash
 pnpm run dev:control
@@ -308,7 +318,7 @@ pnpm run dev:control
 
 默认地址：`http://localhost:3100`
 
-### 第 10 步：启动 Dashboard
+### 第 11 步：启动 Dashboard
 
 打开新终端：
 
@@ -318,7 +328,7 @@ pnpm run dev:dashboard
 
 默认地址：`http://localhost:3200`
 
-### 第 11 步：创建沙盒
+### 第 12 步：创建沙盒
 
 1. 打开 Dashboard `http://localhost:3200`
 2. 点击 **"+"** 创建新沙盒
@@ -327,15 +337,20 @@ pnpm run dev:dashboard
    - **Computer Box** — GUI Ubuntu XFCE 桌面
 4. 等待状态从 `Starting` 变为 `Running`
 
-### 第 12 步：部署 OpenClaw
+### 第 13 步：部署 OpenClaw
 
 1. 在会话面板中点击 **"Deploy Agent"**
-2. 选择 **OpenClaw (auto-install)**
+2. 选择 **OpenClaw (auto-install with bundle/source fallback)**
 3. 等待 Agent 上报就绪
 
-> 首次部署时，安装脚本会在 VM 内通过 `apt` 安装 Chromium 浏览器（如果尚未安装）。
+Paddock 会按下面的顺序选择部署路径：
 
-### 第 13 步：在沙盒内使用 OpenClaw
+1. **官方 runtime bundle**：最快，适合发布构建
+2. **VM 内源码安装**：从 `OPENCLAW_SRC` 或 `thirdparty/openclaw` 复制固定版本源码到 VM，再在 VM 内安装并构建
+
+> 如果你在第 7 步构建了 runtime bundle，Paddock 会优先使用它来获得更快的启动速度。如果没有构建，或者你更看重最大兼容性，Paddock 也可以直接在 VM 内按固定源码安装 OpenClaw。首次部署时，安装脚本还会在 VM 内通过 `apt` 安装 Chromium 浏览器（如果尚未安装）。VM 内源码安装这条路径还会在 VM 内安装 `pnpm` 和 OpenClaw 依赖，所以会更慢，并且可能需要沙盒具备网络访问能力。
+
+### 第 14 步：在沙盒内使用 OpenClaw
 
 部署完成后，通过 Dashboard 向 OpenClaw 发送命令：
 
@@ -343,7 +358,7 @@ pnpm run dev:dashboard
 - *"去浏览器里打开某个页面并总结内容"*
 - *"在工作目录里搭一个简单的 Python HTTP 服务"*
 
-### 第 14 步：查看执行过程
+### 第 15 步：查看执行过程
 
 Dashboard 提供两种视图：
 

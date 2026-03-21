@@ -7,32 +7,37 @@ describe('LLMRelay', () => {
       // Save and clear env
       const saved = { ...process.env };
       delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
       delete process.env.OPENAI_API_KEY;
       delete process.env.OPENROUTER_API_KEY;
       delete process.env.GOOGLE_API_KEY;
 
-      const relay = new LLMRelay();
-      expect(relay.getConfiguredProviders()).toEqual([]);
-
-      // Restore
-      Object.assign(process.env, saved);
+      try {
+        const relay = new LLMRelay();
+        expect(relay.getConfiguredProviders()).toEqual([]);
+      } finally {
+        Object.assign(process.env, saved);
+      }
     });
 
     it('should detect configured providers', () => {
       const saved = { ...process.env };
       process.env.ANTHROPIC_API_KEY = 'test-key';
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
       process.env.OPENAI_API_KEY = 'test-key';
       delete process.env.OPENROUTER_API_KEY;
       delete process.env.GOOGLE_API_KEY;
 
-      const relay = new LLMRelay();
-      const providers = relay.getConfiguredProviders();
-      expect(providers).toContain('anthropic');
-      expect(providers).toContain('openai');
-      expect(providers).not.toContain('openrouter');
-      expect(providers).not.toContain('google');
-
-      Object.assign(process.env, saved);
+      try {
+        const relay = new LLMRelay();
+        const providers = relay.getConfiguredProviders();
+        expect(providers).toContain('anthropic');
+        expect(providers).toContain('openai');
+        expect(providers).not.toContain('openrouter');
+        expect(providers).not.toContain('google');
+      } finally {
+        Object.assign(process.env, saved);
+      }
     });
 
     it('enables Node env proxy support when proxy variables are present', () => {

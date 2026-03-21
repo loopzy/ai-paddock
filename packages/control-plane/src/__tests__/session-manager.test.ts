@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { EventStore } from '../events/event-store.js';
 import { SessionManager } from '../session/session-manager.js';
 import type { SandboxDriver, ExecResult, VMInfo, SandboxSnapshot, SandboxConfig } from '@paddock/types';
@@ -67,6 +70,8 @@ describe('SessionManager', () => {
   const originalBehaviorProvider = process.env.PADDOCK_BEHAVIOR_LLM_PROVIDER;
   const originalBehaviorModel = process.env.PADDOCK_BEHAVIOR_LLM_MODEL;
   const originalBehaviorBaseUrl = process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL;
+  const originalOpenClawSrc = process.env.OPENCLAW_SRC;
+  const tempDirs: string[] = [];
 
   beforeEach(() => {
     process.env.PADDOCK_AGENT_BOOT_DELAY_MS = '0';
@@ -107,8 +112,35 @@ describe('SessionManager', () => {
     else process.env.PADDOCK_BEHAVIOR_LLM_MODEL = originalBehaviorModel;
     if (originalBehaviorBaseUrl === undefined) delete process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL;
     else process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL = originalBehaviorBaseUrl;
+    if (originalOpenClawSrc === undefined) delete process.env.OPENCLAW_SRC;
+    else process.env.OPENCLAW_SRC = originalOpenClawSrc;
+    while (tempDirs.length > 0) {
+      const dir = tempDirs.pop();
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    }
     eventStore.close();
   });
+
+  function createOpenClawSourceTree() {
+    const root = mkdtempSync(join(tmpdir(), 'paddock-openclaw-src-'));
+    tempDirs.push(root);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    mkdirSync(join(root, 'scripts'), { recursive: true });
+    writeFileSync(
+      join(root, 'package.json'),
+      JSON.stringify({
+        name: 'openclaw',
+        packageManager: 'pnpm@10.23.0',
+        scripts: {
+          'build:docker': 'node -e "console.log(\'build:docker\')"',
+        },
+      }, null, 2),
+    );
+    writeFileSync(join(root, 'pnpm-workspace.yaml'), 'packages:\n  - .\n');
+    writeFileSync(join(root, 'openclaw.mjs'), 'console.log("openclaw");\n');
+    writeFileSync(join(root, 'src', 'index.ts'), 'export const ok = true;\n');
+    return root;
+  }
 
   describe('create', () => {
     it('should create a session with default sandbox type', async () => {
@@ -364,7 +396,10 @@ describe('SessionManager', () => {
 
       const session = await manager.create('openclaw');
       await manager.start(session.id);
-      await manager.deployAgent(session.id, 'openclaw');
+      await manager.deployAgent(session.id, 'openclaw', {
+        provider: 'openrouter',
+        model: 'openrouter/moonshotai/kimi-k2',
+      });
 
       const copyInCalls = driver.calls
         .filter((call) => call.method === 'copyIn')
@@ -421,6 +456,38 @@ describe('SessionManager', () => {
       expect(manager.get(session.id)?.agentTransport).toBe('openclaw-gateway');
       expect(manager.get(session.id)?.agentSessionKey).toBe(`paddock:${session.id}`);
       expect(eventStore.getEvents(session.id).some((event) => event.type === 'amp.agent.ready')).toBe(true);
+    });
+
+    it('should support the vm-source deployment mode for OpenClaw', async () => {
+      process.env.PADDOCK_OPENCLAW_DEPLOYMENT_MODE = 'vm-source';
+      process.env.OPENROUTER_API_KEY = 'or-test';
+      process.env.OPENCLAW_SRC = createOpenClawSourceTree();
+
+      const session = await manager.create('openclaw');
+      await manager.start(session.id);
+      await manager.deployAgent(session.id, 'openclaw');
+
+      const copyInCalls = driver.calls
+        .filter((call) => call.method === 'copyIn')
+        .map((call) => String(call.args[1]));
+      expect(copyInCalls.some((hostPath) => hostPath.endsWith('/dist/deployers/openclaw'))).toBe(true);
+      expect(copyInCalls.some((hostPath) => hostPath.includes('openclaw-runtime'))).toBe(true);
+      expect(copyInCalls.some((hostPath) => hostPath.includes('/dist/openclaw-runtime.tar.gz'))).toBe(false);
+
+      const execCommands = driver.calls
+        .filter((call) => call.method === 'exec')
+        .map((call) => String(call.args[1]));
+
+      expect(execCommands.some((command) => command.includes('corepack enable') || command.includes('npm install -g'))).toBe(true);
+      expect(execCommands.some((command) => command.includes('cd /opt/paddock/openclaw-runtime && CI=1 NO_UPDATE_NOTIFIER=1') && command.includes('pnpm install --no-frozen-lockfile'))).toBe(true);
+      expect(execCommands.some((command) => command.includes('cd /opt/paddock/openclaw-runtime') && command.includes('pnpm build:docker'))).toBe(true);
+      expect(execCommands.some((command) => command.includes('/opt/paddock/openclaw/launch.sh'))).toBe(true);
+
+      const readyEvent = eventStore.getEvents(session.id).find((event) => event.type === 'amp.agent.ready');
+      expect(readyEvent).toBeTruthy();
+      expect((readyEvent?.payload as any).version).toBe('vm-source');
+      expect(manager.get(session.id)?.agentTransport).toBe('openclaw-gateway');
+      expect(manager.get(session.id)?.agentSessionKey).toBe(`paddock:${session.id}`);
     });
 
     it('should retry the official OpenClaw gateway health probe until the runtime is ready', async () => {

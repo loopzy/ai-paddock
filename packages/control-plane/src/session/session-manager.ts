@@ -2,7 +2,7 @@ import { nanoid } from 'nanoid';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { networkInterfaces } from 'node:os';
-import { readdirSync } from 'node:fs';
+import { readdirSync, rmSync } from 'node:fs';
 import type { Session, SessionStatus, SandboxType, SandboxDriver, ExecResult, PaddockEvent } from '../types.js';
 import { EventStore } from '../events/event-store.js';
 import { createSandbox } from '../sandbox/factory.js';
@@ -13,6 +13,7 @@ import { getDefaultAgentLLMConfig, resolveAgentLLMConfig } from '../mcp/agent-ll
 import { LLMConfigStore } from '../config/llm-config-store.js';
 import { resolveAgentDeploymentSpec, type AgentDeploymentSpec } from '../agents/deployments.js';
 import { buildOpenClawRuntimeConfig } from '../agents/openclaw-config.js';
+import { stageOpenClawSourceTree } from '../agents/openclaw-source.js';
 import Database from 'better-sqlite3';
 
 // Project root: packages/control-plane/src/session/session-manager.ts → ../../../../
@@ -432,6 +433,44 @@ export class SessionManager {
     }
   }
 
+  private async ensureOpenClawBuildToolchain(
+    driver: SandboxDriver,
+    vmId: string,
+    packageManager: GuestPackageManager,
+  ): Promise<void> {
+    if (packageManager === 'apk') {
+      await this.execOrThrow(
+        driver,
+        vmId,
+        'apk add --no-cache python3 py3-pip ca-certificates curl git build-base pkgconf',
+        'Failed to install the OpenClaw source build toolchain',
+      );
+      return;
+    }
+
+    await this.execOrThrow(
+      driver,
+      vmId,
+      'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip ca-certificates curl git build-essential pkg-config',
+      'Failed to install the OpenClaw source build toolchain',
+    );
+  }
+
+  private async ensurePnpm(driver: SandboxDriver, vmId: string, packageManagerSpec = 'pnpm@10.23.0'): Promise<void> {
+    const pnpmCheck = await driver.exec(vmId, 'command -v pnpm >/dev/null 2>&1 && pnpm --version');
+    if (pnpmCheck.exitCode === 0 && pnpmCheck.stdout.trim()) {
+      return;
+    }
+
+    const spec = packageManagerSpec.trim() || 'pnpm@10.23.0';
+    await this.execOrThrow(
+      driver,
+      vmId,
+      `if command -v corepack >/dev/null 2>&1; then corepack enable && corepack prepare ${shellEscape(spec)} --activate; else npm install -g ${shellEscape(spec)}; fi && pnpm --version`,
+      'Failed to install pnpm inside the sandbox',
+    );
+  }
+
   private async configureAgentEnv(driver: SandboxDriver, vmId: string, config?: AgentLLMConfig): Promise<void> {
     const resolvedConfig = config ? resolveAgentLLMConfig(config, process.env, this.configStore) : getDefaultAgentLLMConfig(process.env, this.configStore);
     const envLines = [
@@ -461,7 +500,7 @@ export class SessionManager {
     const driver = this.getDriver(session.sandboxType);
     const vmId = session.vmId;
     session.agentConfig = resolveAgentLLMConfig(requestedConfig, process.env, this.configStore);
-    const deployment = resolveAgentDeploymentSpec(agentType, { projectRoot: PROJECT_ROOT, env: process.env });
+    const deployment = await resolveAgentDeploymentSpec(agentType, { projectRoot: PROJECT_ROOT, env: process.env });
 
     if (!deployment) {
       throw new Error(`Unknown agent type: ${agentType}`);
@@ -490,6 +529,8 @@ export class SessionManager {
 
       if (deployment.mode === 'official-script') {
         await this.deployOfficialOpenClaw(driver, vmId, sessionId, session, deployment);
+      } else if (deployment.mode === 'vm-source') {
+        await this.deployVmSourceOpenClaw(driver, vmId, sessionId, session, deployment, packageManager);
       } else {
         await this.deployCompatOpenClaw(driver, vmId, sessionId, session, packageManager);
       }
@@ -572,6 +613,86 @@ export class SessionManager {
     }
   }
 
+  private async deployVmSourceOpenClaw(
+    driver: SandboxDriver,
+    vmId: string,
+    sessionId: string,
+    session: RuntimeSession,
+    deployment: AgentDeploymentSpec,
+    packageManager: GuestPackageManager,
+  ): Promise<void> {
+    let stage = 'agent.copy_adapter';
+
+    try {
+      this.eventStore.append(sessionId, 'amp.session.start', {
+        phase: 'agent.copy_adapter',
+        message: 'Copying OpenClaw deployment scripts...',
+      });
+      await driver.copyIn(vmId, deployment.bundleDir, '/opt/paddock');
+
+      stage = 'agent.copy_source';
+      this.eventStore.append(sessionId, 'amp.session.start', {
+        phase: 'agent.copy_source',
+        message: 'Copying pinned OpenClaw source tree into the VM...',
+      });
+      await this.copyOpenClawSourceTree(driver, vmId, deployment.sourceRoot);
+
+      stage = 'agent.install_pnpm';
+      this.eventStore.append(sessionId, 'amp.session.start', {
+        phase: 'agent.install_pnpm',
+        message: `Preparing ${deployment.packageManager ?? 'pnpm'} inside the VM...`,
+      });
+      await this.ensureOpenClawBuildToolchain(driver, vmId, packageManager);
+      await this.ensurePnpm(driver, vmId, deployment.packageManager);
+
+      stage = 'agent.install_deps';
+      this.eventStore.append(sessionId, 'amp.session.start', {
+        phase: 'agent.install_deps',
+        message: 'Installing OpenClaw dependencies inside the VM...',
+      });
+      await this.execOrThrow(
+        driver,
+        vmId,
+        'cd /opt/paddock/openclaw-runtime && CI=1 NO_UPDATE_NOTIFIER=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 PUPPETEER_SKIP_DOWNLOAD=1 OPENCLAW_SKIP_CHANNELS=1 pnpm install --no-frozen-lockfile',
+        'Failed to install OpenClaw dependencies inside the VM',
+      );
+
+      stage = 'agent.build_source';
+      this.eventStore.append(sessionId, 'amp.session.start', {
+        phase: 'agent.build_source',
+        message: 'Building OpenClaw inside the VM...',
+      });
+      await this.execOrThrow(
+        driver,
+        vmId,
+        'cd /opt/paddock/openclaw-runtime && if node -e "const fs=require(\'node:fs\'); const pkg=JSON.parse(fs.readFileSync(\'package.json\',\'utf8\')); process.exit(pkg.scripts && pkg.scripts[\'build:docker\'] ? 0 : 1)"; then CI=1 NO_UPDATE_NOTIFIER=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 PUPPETEER_SKIP_DOWNLOAD=1 OPENCLAW_SKIP_CHANNELS=1 pnpm build:docker; else CI=1 NO_UPDATE_NOTIFIER=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 PUPPETEER_SKIP_DOWNLOAD=1 OPENCLAW_SKIP_CHANNELS=1 pnpm build; fi',
+        'Failed to build OpenClaw inside the VM',
+      );
+
+      await this.finishOpenClawGatewayDeployment(
+        driver,
+        vmId,
+        sessionId,
+        session,
+        packageManager,
+        deployment,
+        'vm-source',
+        (nextStage) => { stage = nextStage; },
+      );
+    } catch (err) {
+      const error = err as Error;
+      const logs = await this.tailLog(driver, vmId, '/var/log/openclaw.log');
+      const message = logs ? `${error.message}. OpenClaw logs: ${logs}` : error.message;
+      this.eventStore.append(sessionId, 'amp.agent.fatal', {
+        agent: 'openclaw',
+        code: stage === 'agent.verify' ? 'ERR_AGENT_NOT_READY' : 'ERR_AGENT_DEPLOY',
+        message,
+        stage,
+      });
+      throw new Error(message);
+    }
+  }
+
   private async deployOfficialOpenClaw(
     driver: SandboxDriver,
     vmId: string,
@@ -606,98 +727,16 @@ export class SessionManager {
       } else {
         await this.copyOpenClawRuntimeBundle(driver, vmId, join(PROJECT_ROOT, 'dist', 'openclaw-runtime'));
       }
-
-      stage = 'agent.env';
-      this.eventStore.append(sessionId, 'amp.session.start', {
-        phase: 'agent.env',
-        message: `Configuring agent model (${session.agentConfig?.provider} / ${session.agentConfig?.model})...`,
-      });
-      await this.configureAgentEnv(driver, vmId, session.agentConfig);
-
-      stage = 'agent.install_browser';
-      this.eventStore.append(sessionId, 'amp.session.start', {
-        phase: 'agent.install_browser',
-        message: 'Ensuring a sandbox system browser is installed...',
-      });
-      const browserRuntime = await this.ensureSystemBrowser(driver, vmId, packageManager);
-      this.eventStore.append(sessionId, 'amp.session.start', {
-        phase: 'agent.browser',
-        message: browserRuntime.enabled
-          ? `Using sandbox system browser: ${browserRuntime.executablePath}`
-          : 'No system browser detected in the sandbox. Install chromium/chrome with apt to enable browser tools.',
-      });
-      await this.writeOpenClawConfig(
+      await this.finishOpenClawGatewayDeployment(
         driver,
         vmId,
-        session.agentConfig ?? getDefaultAgentLLMConfig(process.env, this.configStore),
-        session.sandboxType,
-        browserRuntime,
+        sessionId,
+        session,
+        packageManager,
+        deployment,
+        'official-script',
+        (nextStage) => { stage = nextStage; },
       );
-
-      stage = 'agent.install_adapter';
-      this.eventStore.append(sessionId, 'amp.session.start', {
-        phase: 'agent.install_adapter',
-        message: 'Preparing official OpenClaw runtime...',
-      });
-      await this.execOrThrow(
-        driver,
-        vmId,
-        'OPENCLAW_STATE_DIR=/workspace/.openclaw OPENCLAW_CONFIG_PATH=/workspace/.openclaw/openclaw.json OPENCLAW_GATEWAY_PORT=18789 /opt/paddock/openclaw/install.sh',
-        'Failed to prepare official OpenClaw runtime',
-      );
-
-      stage = 'agent.starting';
-      this.eventStore.append(sessionId, 'amp.session.start', {
-        phase: 'agent.starting',
-        message: 'Starting official OpenClaw gateway runtime...',
-      });
-      await this.execOrThrow(
-        driver,
-        vmId,
-        'set -a && . /etc/environment && set +a && OPENCLAW_STATE_DIR=/workspace/.openclaw OPENCLAW_CONFIG_PATH=/workspace/.openclaw/openclaw.json OPENCLAW_GATEWAY_PORT=18789 OPENCLAW_SKIP_CHANNELS=1 OPENCLAW_BUNDLED_PLUGINS_DIR=/opt/paddock/openclaw/paddock-amp-plugin NO_PROXY=127.0.0.1,localhost /opt/paddock/openclaw/launch.sh',
-        'Failed to launch OpenClaw',
-      );
-
-      await new Promise(r => setTimeout(r, Number(process.env.PADDOCK_AGENT_BOOT_DELAY_MS ?? 3000)));
-
-      stage = 'agent.verify';
-      this.eventStore.append(sessionId, 'amp.session.start', {
-        phase: 'agent.verify',
-        message: 'Waiting for the OpenClaw gateway to accept commands...',
-      });
-      await this.execOrThrow(driver, vmId, 'test -s /var/run/openclaw.pid && kill -0 "$(cat /var/run/openclaw.pid)"', 'OpenClaw process exited during startup');
-      await this.waitForExecSuccess(
-        driver,
-        vmId,
-        'OPENCLAW_STATE_DIR=/workspace/.openclaw OPENCLAW_CONFIG_PATH=/workspace/.openclaw/openclaw.json OPENCLAW_GATEWAY_PORT=18789 NO_PROXY=127.0.0.1,localhost node /opt/paddock/openclaw-runtime/openclaw.mjs gateway health --json --port 18789 >/tmp/paddock-openclaw-health.json',
-        'OpenClaw gateway is not responding',
-        Number(process.env.PADDOCK_OPENCLAW_GATEWAY_READY_TIMEOUT_MS ?? 90000),
-        Number(process.env.PADDOCK_OPENCLAW_GATEWAY_READY_INTERVAL_MS ?? 2000),
-      );
-
-      if (browserRuntime.enabled) {
-        stage = 'agent.browser_prewarm';
-        this.eventStore.append(sessionId, 'amp.session.start', {
-          phase: 'agent.browser_prewarm',
-          message: 'Pre-warming the OpenClaw browser runtime...',
-        });
-        await this.waitForExecSuccess(
-          driver,
-          vmId,
-          'OPENCLAW_STATE_DIR=/workspace/.openclaw OPENCLAW_CONFIG_PATH=/workspace/.openclaw/openclaw.json OPENCLAW_GATEWAY_PORT=18789 NO_PROXY=127.0.0.1,localhost node /opt/paddock/openclaw-runtime/openclaw.mjs browser start --json >/tmp/paddock-openclaw-browser.json',
-          'OpenClaw browser runtime is not ready',
-          Number(process.env.PADDOCK_OPENCLAW_BROWSER_READY_TIMEOUT_MS ?? 60000),
-          Number(process.env.PADDOCK_OPENCLAW_BROWSER_READY_INTERVAL_MS ?? 2000),
-        );
-      }
-
-      this.eventStore.append(sessionId, 'amp.agent.ready', {
-        agent: 'openclaw',
-        version: 'official-script',
-        capabilities: ['chat', 'gateway'],
-        transport: deployment.commandTransport,
-      });
-      this.eventStore.append(sessionId, 'amp.session.start', { phase: 'agent_ready', message: 'OpenClaw connected to Paddock' });
     } catch (err) {
       const error = err as Error;
       const logs = await this.tailLog(driver, vmId, '/var/log/openclaw.log');
@@ -710,6 +749,110 @@ export class SessionManager {
       });
       throw new Error(message);
     }
+  }
+
+  private async finishOpenClawGatewayDeployment(
+    driver: SandboxDriver,
+    vmId: string,
+    sessionId: string,
+    session: RuntimeSession,
+    packageManager: GuestPackageManager,
+    deployment: AgentDeploymentSpec,
+    versionLabel: 'official-script' | 'vm-source',
+    setStage?: (stage: string) => void,
+  ): Promise<void> {
+    setStage?.('agent.env');
+    this.eventStore.append(sessionId, 'amp.session.start', {
+      phase: 'agent.env',
+      message: `Configuring agent model (${session.agentConfig?.provider} / ${session.agentConfig?.model})...`,
+    });
+    await this.configureAgentEnv(driver, vmId, session.agentConfig);
+
+    setStage?.('agent.install_browser');
+    this.eventStore.append(sessionId, 'amp.session.start', {
+      phase: 'agent.install_browser',
+      message: 'Ensuring a sandbox system browser is installed...',
+    });
+    const browserRuntime = await this.ensureSystemBrowser(driver, vmId, packageManager);
+    this.eventStore.append(sessionId, 'amp.session.start', {
+      phase: 'agent.browser',
+      message: browserRuntime.enabled
+        ? `Using sandbox system browser: ${browserRuntime.executablePath}`
+        : 'No system browser detected in the sandbox. Install chromium/chrome with apt to enable browser tools.',
+    });
+    await this.writeOpenClawConfig(
+      driver,
+      vmId,
+      session.agentConfig ?? getDefaultAgentLLMConfig(process.env, this.configStore),
+      session.sandboxType,
+      browserRuntime,
+    );
+
+    setStage?.('agent.install_adapter');
+    this.eventStore.append(sessionId, 'amp.session.start', {
+      phase: 'agent.install_adapter',
+      message: versionLabel === 'vm-source' ? 'Preparing VM-built OpenClaw runtime...' : 'Preparing official OpenClaw runtime...',
+    });
+    await this.execOrThrow(
+      driver,
+      vmId,
+      'OPENCLAW_STATE_DIR=/workspace/.openclaw OPENCLAW_CONFIG_PATH=/workspace/.openclaw/openclaw.json OPENCLAW_GATEWAY_PORT=18789 /opt/paddock/openclaw/install.sh',
+      'Failed to prepare OpenClaw runtime',
+    );
+
+    setStage?.('agent.starting');
+    this.eventStore.append(sessionId, 'amp.session.start', {
+      phase: 'agent.starting',
+      message: versionLabel === 'vm-source' ? 'Starting VM-built OpenClaw gateway runtime...' : 'Starting official OpenClaw gateway runtime...',
+    });
+    await this.execOrThrow(
+      driver,
+      vmId,
+      'set -a && . /etc/environment && set +a && OPENCLAW_STATE_DIR=/workspace/.openclaw OPENCLAW_CONFIG_PATH=/workspace/.openclaw/openclaw.json OPENCLAW_GATEWAY_PORT=18789 OPENCLAW_SKIP_CHANNELS=1 OPENCLAW_BUNDLED_PLUGINS_DIR=/opt/paddock/openclaw/paddock-amp-plugin NO_PROXY=127.0.0.1,localhost /opt/paddock/openclaw/launch.sh',
+      'Failed to launch OpenClaw',
+    );
+
+    await new Promise(r => setTimeout(r, Number(process.env.PADDOCK_AGENT_BOOT_DELAY_MS ?? 3000)));
+
+    setStage?.('agent.verify');
+    this.eventStore.append(sessionId, 'amp.session.start', {
+      phase: 'agent.verify',
+      message: 'Waiting for the OpenClaw gateway to accept commands...',
+    });
+    await this.execOrThrow(driver, vmId, 'test -s /var/run/openclaw.pid && kill -0 "$(cat /var/run/openclaw.pid)"', 'OpenClaw process exited during startup');
+    await this.waitForExecSuccess(
+      driver,
+      vmId,
+      'OPENCLAW_STATE_DIR=/workspace/.openclaw OPENCLAW_CONFIG_PATH=/workspace/.openclaw/openclaw.json OPENCLAW_GATEWAY_PORT=18789 NO_PROXY=127.0.0.1,localhost node /opt/paddock/openclaw-runtime/openclaw.mjs gateway health --json --port 18789 >/tmp/paddock-openclaw-health.json',
+      'OpenClaw gateway is not responding',
+      Number(process.env.PADDOCK_OPENCLAW_GATEWAY_READY_TIMEOUT_MS ?? 90000),
+      Number(process.env.PADDOCK_OPENCLAW_GATEWAY_READY_INTERVAL_MS ?? 2000),
+    );
+
+    if (browserRuntime.enabled) {
+      setStage?.('agent.browser_prewarm');
+      this.eventStore.append(sessionId, 'amp.session.start', {
+        phase: 'agent.browser_prewarm',
+        message: 'Pre-warming the OpenClaw browser runtime...',
+      });
+      await this.waitForExecSuccess(
+        driver,
+        vmId,
+        'OPENCLAW_STATE_DIR=/workspace/.openclaw OPENCLAW_CONFIG_PATH=/workspace/.openclaw/openclaw.json OPENCLAW_GATEWAY_PORT=18789 NO_PROXY=127.0.0.1,localhost node /opt/paddock/openclaw-runtime/openclaw.mjs browser start --json >/tmp/paddock-openclaw-browser.json',
+        'OpenClaw browser runtime is not ready',
+        Number(process.env.PADDOCK_OPENCLAW_BROWSER_READY_TIMEOUT_MS ?? 60000),
+        Number(process.env.PADDOCK_OPENCLAW_BROWSER_READY_INTERVAL_MS ?? 2000),
+      );
+    }
+
+    setStage?.('agent_ready');
+    this.eventStore.append(sessionId, 'amp.agent.ready', {
+      agent: 'openclaw',
+      version: versionLabel,
+      capabilities: ['chat', 'gateway'],
+      transport: deployment.commandTransport,
+    });
+    this.eventStore.append(sessionId, 'amp.session.start', { phase: 'agent_ready', message: 'OpenClaw connected to Paddock' });
   }
 
   private async writeOpenClawConfig(
@@ -751,6 +894,20 @@ export class SessionManager {
       } else {
         await driver.copyIn(vmId, hostPath, '/opt/paddock/openclaw-runtime');
       }
+    }
+  }
+
+  private async copyOpenClawSourceTree(driver: SandboxDriver, vmId: string, sourceRoot?: string): Promise<void> {
+    if (!sourceRoot) {
+      throw new Error('Pinned OpenClaw source tree not found. Set OPENCLAW_SRC or clone the upstream source into thirdparty/openclaw.');
+    }
+
+    const { stageRoot, runtimeDir } = await stageOpenClawSourceTree(sourceRoot);
+    try {
+      await this.execOrThrow(driver, vmId, 'rm -rf /opt/paddock/openclaw-runtime && mkdir -p /opt/paddock', 'Failed to prepare OpenClaw source runtime directory');
+      await driver.copyIn(vmId, runtimeDir, '/opt/paddock');
+    } finally {
+      rmSync(stageRoot, { recursive: true, force: true });
     }
   }
 

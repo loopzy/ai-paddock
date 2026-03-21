@@ -159,7 +159,7 @@ function AgentSelector({ value, onChange }: { value: string; onChange: (v: strin
   return (
     <select value={value} onChange={(e) => onChange(e.target.value)}
       className="w-full min-w-0 rounded-2xl border border-stone-300 bg-white px-3 py-2 text-xs text-stone-800 shadow-sm" aria-label="Select agent type">
-      <option value="openclaw">OpenClaw (auto-install)</option>
+      <option value="openclaw">OpenClaw (auto-install with bundle/source fallback)</option>
     </select>
   );
 }
