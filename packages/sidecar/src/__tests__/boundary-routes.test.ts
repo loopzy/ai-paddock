@@ -2,6 +2,7 @@ import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAmpGateRequestHandler } from '../index.js';
 import { ControlPlaneClient } from '../control-plane-client.js';
+import { PolicyGate } from '../security/policy-gate.js';
 
 class ReporterStub {
   events: Array<{ type: string; payload: Record<string, unknown>; opts?: Record<string, unknown> }> = [];
@@ -223,5 +224,162 @@ describe('Sidecar boundary routes', () => {
       },
       opts: { correlationId: 'corr-write-1', snapshotRef: 'snap-checkpoint-1' },
     });
+  });
+
+  it('sanitizes native amp.llm.request events before reporting them', async () => {
+    const reporter = new ReporterStub();
+    const onToolResult = vi.fn();
+    const handler = createAmpGateRequestHandler({
+      sessionId: 'session-sidecar-test',
+      controlPlaneClient: new ControlPlaneClient(['http://control.test']),
+      commandFile: '/tmp/paddock-boundary-test.jsonl',
+      policyGate: { evaluate: vi.fn(), onToolResult } as any,
+      reporter: reporter as any,
+      agentMonitor: { reportReady: vi.fn(), reportError: vi.fn(), reportExit: vi.fn(), start: vi.fn(), stop: vi.fn() } as any,
+    });
+
+    const eventResponse = await invokeHandler(handler, {
+      method: 'POST',
+      url: '/amp/event',
+      body: JSON.stringify({
+        toolName: 'amp.llm.request',
+        result: JSON.stringify({
+          provider: 'openrouter',
+          model: 'qwen/qwen3.5-flash-02-23',
+          messagesPreview: [
+            { role: 'user', text: 'my key is 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 and mail me at user@example.com' },
+          ],
+          request: {
+            prompt: 'my key is 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 and mail me at user@example.com',
+          },
+        }),
+      }),
+    });
+
+    expect(eventResponse.statusCode).toBe(200);
+    expect(onToolResult).not.toHaveBeenCalled();
+    expect(reporter.events).toContainEqual(
+      expect.objectContaining({
+        type: 'amp.llm.request',
+        payload: expect.objectContaining({
+          provider: 'openrouter',
+          model: 'qwen/qwen3.5-flash-02-23',
+          messagesPreview: [
+            {
+              role: 'user',
+              text: expect.stringContaining('{{PADDOCK_SECRET_'),
+            },
+          ],
+          request: expect.objectContaining({
+            prompt: expect.stringContaining('{{PADDOCK_SECRET_'),
+          }),
+          vault: expect.objectContaining({
+            secretsMasked: expect.any(Number),
+            categories: expect.arrayContaining(['openrouter_key', 'email']),
+          }),
+        }),
+      }),
+    );
+    expect(JSON.stringify(reporter.events)).not.toContain('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');
+    expect(JSON.stringify(reporter.events)).not.toContain('user@example.com');
+  });
+
+  it('does not let native amp.llm.request events pollute taint-based gate decisions', async () => {
+    const reporter = new ReporterStub();
+    const policyGate = new PolicyGate('/workspace');
+    const handler = createAmpGateRequestHandler({
+      sessionId: 'session-sidecar-test',
+      controlPlaneClient: new ControlPlaneClient(['http://control.test']),
+      commandFile: '/tmp/paddock-boundary-test.jsonl',
+      policyGate,
+      reporter: reporter as any,
+      agentMonitor: { reportReady: vi.fn(), reportError: vi.fn(), reportExit: vi.fn(), start: vi.fn(), stop: vi.fn() } as any,
+    });
+
+    await invokeHandler(handler, {
+      method: 'POST',
+      url: '/amp/event',
+      body: JSON.stringify({
+        toolName: 'amp.llm.request',
+        result: JSON.stringify({
+          request: {
+            prompt: 'remember sk-ant-abcdefghijklmnopqrstuvwxyz for later',
+          },
+        }),
+      }),
+    });
+
+    const gateResponse = await invokeHandler(handler, {
+      method: 'POST',
+      url: '/amp/gate',
+      body: JSON.stringify({
+        correlationId: 'corr-exec-1',
+        toolName: 'exec',
+        toolInput: {
+          command: "printf '%s' 'sk-ant-abcdefghijklmnopqrstuvwxyz'",
+        },
+      }),
+    });
+
+    expect(gateResponse.statusCode).toBe(200);
+    expect(JSON.parse(gateResponse.body)).toMatchObject({
+      verdict: 'approve',
+      riskScore: 0,
+      triggeredRules: [],
+      riskBreakdown: {
+        taint: 0,
+      },
+    });
+  });
+
+  it('sanitizes native amp.llm.response events before reporting them', async () => {
+    const reporter = new ReporterStub();
+    const onToolResult = vi.fn();
+    const handler = createAmpGateRequestHandler({
+      sessionId: 'session-sidecar-test',
+      controlPlaneClient: new ControlPlaneClient(['http://control.test']),
+      commandFile: '/tmp/paddock-boundary-test.jsonl',
+      policyGate: { evaluate: vi.fn(), onToolResult } as any,
+      reporter: reporter as any,
+      agentMonitor: { reportReady: vi.fn(), reportError: vi.fn(), reportExit: vi.fn(), start: vi.fn(), stop: vi.fn() } as any,
+    });
+
+    const eventResponse = await invokeHandler(handler, {
+      method: 'POST',
+      url: '/amp/event',
+      body: JSON.stringify({
+        toolName: 'amp.llm.response',
+        result: JSON.stringify({
+          provider: 'openrouter',
+          model: 'qwen/qwen3.5-flash-02-23',
+          responseText: 'token is sk-ant-abcdefghijklmnopqrstuvwxyz, contact user@example.com',
+          responsePreview: 'token is sk-ant-abcdefghijklmnopqrstuvwxyz, contact user@example.com',
+          response: {
+            assistantTexts: ['token is sk-ant-abcdefghijklmnopqrstuvwxyz, contact user@example.com'],
+          },
+        }),
+      }),
+    });
+
+    expect(eventResponse.statusCode).toBe(200);
+    expect(onToolResult).not.toHaveBeenCalled();
+    expect(reporter.events).toContainEqual(
+      expect.objectContaining({
+        type: 'amp.llm.response',
+        payload: expect.objectContaining({
+          responseText: expect.stringContaining('{{PADDOCK_SECRET_'),
+          responsePreview: expect.stringContaining('{{PADDOCK_SECRET_'),
+          response: expect.objectContaining({
+            assistantTexts: [expect.stringContaining('{{PADDOCK_SECRET_')],
+          }),
+          vault: expect.objectContaining({
+            secretsMasked: expect.any(Number),
+            categories: expect.arrayContaining(['anthropic_key', 'email']),
+          }),
+        }),
+      }),
+    );
+    expect(JSON.stringify(reporter.events)).not.toContain('sk-ant-abcdefghijklmnopqrstuvwxyz');
+    expect(JSON.stringify(reporter.events)).not.toContain('user@example.com');
   });
 });

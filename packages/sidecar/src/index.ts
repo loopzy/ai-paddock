@@ -9,6 +9,7 @@ import { createBehaviorAnalyzerFromEnv, getBehaviorLLMConfigFromEnv } from './se
 import { AgentMonitor } from './agent-monitor.js';
 import { abortAgentCommand, createOpenClawGatewayAborter, createOpenClawGatewayInvoker, routeAgentCommand } from './command-router.js';
 import type { AMPGateRequest, AMPGateVerdict, AMPAgentError } from '@paddock/types';
+import { SensitiveDataVault } from './vault/sensitive-data-vault.js';
 
 const COMMAND_FILE = process.env.PADDOCK_COMMAND_FILE ?? '/tmp/paddock-commands.jsonl';
 
@@ -101,22 +102,50 @@ type AmpGateServerDeps = {
   policyGate: PolicyGate;
   reporter: EventReporter;
   agentMonitor: AgentMonitor;
+  ampEventVault?: SensitiveDataVault;
 };
 
 const ROLLBACKABLE_LOCAL_TOOLS = new Set(['write', 'edit', 'apply_patch']);
 const HIGH_RISK_EXEC_PATTERN =
   /\b(apt(?:-get)?|apk|dnf|yum|pip3?|npm|pnpm|yarn)\s+(?:install|add|remove|uninstall|upgrade|update)\b|(?:^|\s)rm\s+-rf?\b|(?:^|\s)git\s+(?:clean|reset)\b/i;
+const OBSERVATIONAL_AMP_EVENTS = new Set(['amp.llm.request', 'amp.llm.response']);
 
 export function createAmpGateServer(deps: AmpGateServerDeps) {
   return createServer(createAmpGateRequestHandler(deps));
 }
 
+function mergeVaultSummary(
+  payload: Record<string, unknown>,
+  secretsFound: number,
+  categories: string[],
+): Record<string, unknown> {
+  const existingVault =
+    payload.vault && typeof payload.vault === 'object'
+      ? (payload.vault as Record<string, unknown>)
+      : undefined;
+  const existingCategories = Array.isArray(existingVault?.categories)
+    ? existingVault.categories.filter((value): value is string => typeof value === 'string')
+    : [];
+  const existingSecretsMasked =
+    typeof existingVault?.secretsMasked === 'number' ? existingVault.secretsMasked : 0;
+
+  return {
+    ...payload,
+    vault: {
+      ...(existingVault ?? {}),
+      secretsMasked: existingSecretsMasked + secretsFound,
+      categories: Array.from(new Set([...existingCategories, ...categories])),
+    },
+  };
+}
+
 export function createAmpGateRequestHandler(deps: AmpGateServerDeps) {
+  const ampEventVault = deps.ampEventVault ?? new SensitiveDataVault();
   return async (req: IncomingMessage, res: ServerResponse) => {
     if (req.method === 'POST' && req.url === '/amp/gate') {
       await handleGateRequest(req, res, deps.policyGate, deps.reporter, deps.controlPlaneClient, deps.sessionId);
     } else if (req.method === 'POST' && req.url === '/amp/event') {
-      await handleEventReport(req, res, deps.policyGate, deps.reporter);
+      await handleEventReport(req, res, deps.policyGate, deps.reporter, ampEventVault);
     } else if (req.method === 'GET' && req.url === '/amp/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, sessionId: deps.sessionId }));
@@ -215,7 +244,13 @@ async function handleGateRequest(req: IncomingMessage, res: ServerResponse, gate
 /**
  * POST /amp/event — receive tool result events for taint tracking.
  */
-async function handleEventReport(req: IncomingMessage, res: ServerResponse, gate: PolicyGate, reporter: EventReporter) {
+async function handleEventReport(
+  req: IncomingMessage,
+  res: ServerResponse,
+  gate: PolicyGate,
+  reporter: EventReporter,
+  ampEventVault: SensitiveDataVault,
+) {
   try {
     const body = JSON.parse(await collectBody(req)) as {
       toolName: string;
@@ -224,13 +259,22 @@ async function handleEventReport(req: IncomingMessage, res: ServerResponse, gate
       correlationId?: string;
       snapshotRef?: string;
     };
-    gate.onToolResult(body.toolName, body.result, { path: body.path });
+    const shouldSanitizeObservationalEvent = OBSERVATIONAL_AMP_EVENTS.has(body.toolName);
+    const sanitizedResult = shouldSanitizeObservationalEvent ? ampEventVault.mask(body.result) : undefined;
+    const effectiveResult = sanitizedResult?.masked ?? body.result;
+
+    if (!shouldSanitizeObservationalEvent) {
+      gate.onToolResult(body.toolName, effectiveResult, { path: body.path });
+    }
     if (body.toolName.startsWith('amp.')) {
-      let payload: Record<string, unknown> = { result: body.result };
+      let payload: Record<string, unknown> = { result: effectiveResult };
       try {
-        payload = JSON.parse(body.result);
+        payload = JSON.parse(effectiveResult);
       } catch {
         // leave raw string payload
+      }
+      if (sanitizedResult && sanitizedResult.secretsFound > 0) {
+        payload = mergeVaultSummary(payload, sanitizedResult.secretsFound, sanitizedResult.categories);
       }
       await reporter.report(
         body.toolName as any,
@@ -240,9 +284,9 @@ async function handleEventReport(req: IncomingMessage, res: ServerResponse, gate
           : undefined,
       );
     } else {
-      let resultPayload: unknown = body.result;
+      let resultPayload: unknown = effectiveResult;
       try {
-        resultPayload = JSON.parse(body.result);
+        resultPayload = JSON.parse(effectiveResult);
       } catch {
         // leave string result as-is
       }
