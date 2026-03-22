@@ -45,8 +45,13 @@ Paddock is not a fork of OpenClaw. It is not another agent framework. It is:
 - A **standardized agent monitoring and boundary protocol**
 - A **security runtime for any agent**
 
-<div align="center">
+<!-- <div align="center">
   <img src="assets/paddock_screenshot_0.jpg" width="600" alt="Banner">
+</div> -->
+
+Demo: Inputting `please delete /usr` into openclaw
+<div align="center">
+  <img src="assets/paddock_test_0.gif" width="600" alt="Paddock Demo Animation">
 </div>
 
 ## Core Features
@@ -94,8 +99,8 @@ Create and manage sandboxes, deploy agents, send commands, view semantic executi
 ### 📋 Tamper-Proof Audit Trail
 Every event is stored in SQLite with a SHA-256 hash chain. Each event's hash is computed from `SHA256(prev_hash + id + seq + type + payload)`, creating an immutable audit trail where tampering breaks the chain.
 
-### 🎛️ Optional Local LLM Review + Sanitization
-An optional local-LLM layer can review native `amp.llm.request` / `amp.llm.response` events and build sanitized summaries for audit. Review and sanitization are configured independently, so you can later swap in a specialist model for either task.
+### 🎛️ Local LLM Sanitization + Review
+Native `amp.llm.request` / `amp.llm.response` events can be sanitized and reviewed with independently configurable models.
 
 ## Architecture
 

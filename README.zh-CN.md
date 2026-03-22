@@ -86,8 +86,8 @@ API 密钥**永远不进入沙盒**。Agent 使用假密钥；Sidecar LLM Proxy 
 ### 📋 防篡改审计链
 每个事件存储在 SQLite 中，附带 SHA-256 哈希链。每个事件的哈希由 `SHA256(prev_hash + id + seq + type + payload)` 计算，构成不可篡改的审计轨迹。
 
-### 🎛️ 可选本地 LLM 审核与脱敏
-可选启用本地 LLM，对原生 `amp.llm.request` / `amp.llm.response` 事件做语义审核，并生成审计用的脱敏摘要。审核和脱敏是两套独立接口，后续可以分别替换成更专业的模型。
+### 🎛️ 本地 LLM 脱敏与审查
+原生 `amp.llm.request` / `amp.llm.response` 事件支持独立可配置的脱敏模型和审查模型。
 
 ## 架构
 
