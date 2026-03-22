@@ -249,6 +249,21 @@ function summarizeMessage(message) {
   };
 }
 
+function messagePreview(message) {
+  if (!message || typeof message !== 'object') {
+    return undefined;
+  }
+  const role = typeof message.role === 'string' ? message.role : undefined;
+  const text = extractMessageText(message);
+  if (!role || !text) {
+    return undefined;
+  }
+  return {
+    role,
+    text,
+  };
+}
+
 function extractMessageText(value) {
   if (typeof value === 'string') {
     return value.trim();
@@ -301,6 +316,100 @@ async function reportTraceEvent(config, log, phase, event, ctx, timeoutMs = 2000
   await reportAmpEvent(config, log, 'amp.trace', payload, timeoutMs);
 }
 
+function buildMessagesPreview(systemPrompt, historyMessages, prompt) {
+  const preview = [];
+  if (typeof systemPrompt === 'string' && systemPrompt.trim()) {
+    preview.push({ role: 'system', text: systemPrompt.trim() });
+  }
+  if (Array.isArray(historyMessages)) {
+    for (const message of historyMessages) {
+      const summarized = messagePreview(message);
+      if (summarized) {
+        preview.push(summarized);
+      }
+    }
+  }
+  if (typeof prompt === 'string' && prompt.trim()) {
+    preview.push({ role: 'user', text: prompt.trim() });
+  }
+  return preview;
+}
+
+function buildNativeLlmRequestPayload(event, ctx) {
+  const systemPrompt = typeof event?.systemPrompt === 'string' ? event.systemPrompt : undefined;
+  const prompt = typeof event?.prompt === 'string' ? event.prompt : '';
+  const historyMessages = Array.isArray(event?.historyMessages) ? event.historyMessages : [];
+  const messagesPreview = buildMessagesPreview(systemPrompt, historyMessages, prompt);
+  return {
+    source: 'openclaw-native-hook',
+    provider: typeof event?.provider === 'string' ? event.provider : 'unknown',
+    model: typeof event?.model === 'string' ? event.model : 'unknown',
+    runId: event?.runId ?? ctx?.runId,
+    sessionId: event?.sessionId,
+    sessionKey: ctx?.sessionKey,
+    agentId: ctx?.agentId,
+    messageCount: messagesPreview.length,
+    messagesPreview,
+    imagesCount: typeof event?.imagesCount === 'number' ? event.imagesCount : 0,
+    request: {
+      systemPrompt,
+      prompt,
+      historyMessages,
+      imagesCount: typeof event?.imagesCount === 'number' ? event.imagesCount : 0,
+    },
+  };
+}
+
+function buildNativeLlmResponsePayload(event, ctx) {
+  const assistantTexts = Array.isArray(event?.assistantTexts)
+    ? event.assistantTexts.filter((value) => typeof value === 'string' && value.trim())
+    : [];
+  const responseText = assistantTexts.join('\n\n').trim() || extractMessageText(event?.lastAssistant);
+  const usage = event?.usage && typeof event.usage === 'object' ? event.usage : undefined;
+  return {
+    source: 'openclaw-native-hook',
+    provider: typeof event?.provider === 'string' ? event.provider : 'unknown',
+    model: typeof event?.model === 'string' ? event.model : 'unknown',
+    runId: event?.runId ?? ctx?.runId,
+    sessionId: event?.sessionId,
+    sessionKey: ctx?.sessionKey,
+    agentId: ctx?.agentId,
+    tokensIn: typeof usage?.input === 'number' ? usage.input : 0,
+    tokensOut: typeof usage?.output === 'number' ? usage.output : 0,
+    responseText,
+    responsePreview: truncateString(responseText, 4000),
+    response: {
+      assistantTexts,
+      lastAssistant: event?.lastAssistant,
+      usage,
+    },
+  };
+}
+
+function sanitizeModelResolveOverride(value, fallbackProvider) {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const providerOverride =
+    typeof value.providerOverride === 'string' && value.providerOverride.trim()
+      ? value.providerOverride.trim()
+      : fallbackProvider;
+  const modelOverride =
+    typeof value.modelOverride === 'string' && value.modelOverride.trim()
+      ? value.modelOverride.trim()
+      : undefined;
+
+  if (!providerOverride && !modelOverride) {
+    return undefined;
+  }
+
+  return {
+    ...(providerOverride ? { providerOverride } : {}),
+    ...(modelOverride ? { modelOverride } : {}),
+  };
+}
+
 export default {
   id: 'paddock-amp',
   register(api) {
@@ -337,6 +446,50 @@ export default {
       sidecarUrl: config.sidecarUrl,
       workspaceRoot: config.workspaceRoot,
       logFile: config.logFile,
+    });
+
+    api.on('before_model_resolve', async (event, ctx) => {
+      const provider = typeof event?.provider === 'string' ? event.provider.trim() : '';
+      const model = typeof event?.model === 'string' ? event.model.trim() : '';
+
+      log('before_model_resolve:start', {
+        runId: ctx?.runId,
+        provider,
+        model,
+      });
+
+      try {
+        const result = await postJson(
+          `${config.sidecarUrl}/amp/control`,
+          {
+            toolName: 'llm_prepare',
+            args: {
+              provider,
+              model,
+              runId: ctx?.runId,
+              sessionKey: ctx?.sessionKey,
+              agentId: ctx?.agentId,
+            },
+          },
+          5000,
+        );
+
+        const override = sanitizeModelResolveOverride(result, provider);
+        if (override) {
+          log('before_model_resolve:override', {
+            runId: ctx?.runId,
+            providerOverride: override.providerOverride ?? null,
+            modelOverride: override.modelOverride ?? null,
+          });
+        }
+        return override;
+      } catch (error) {
+        log('before_model_resolve:failed', {
+          runId: ctx?.runId,
+          error: String(error),
+        });
+        return undefined;
+      }
     });
 
     api.on(
@@ -569,6 +722,29 @@ export default {
         );
       }
       await reportTraceEvent(config, log, 'openclaw.agent_end', payload, ctx);
+    });
+
+    api.on('llm_input', async (event, ctx) => {
+      const payload = buildNativeLlmRequestPayload(event, ctx);
+      log('llm_input', {
+        runId: payload.runId,
+        provider: payload.provider,
+        model: payload.model,
+        messageCount: payload.messageCount,
+      });
+      await reportAmpEvent(config, log, 'amp.llm.request', payload);
+    });
+
+    api.on('llm_output', async (event, ctx) => {
+      const payload = buildNativeLlmResponsePayload(event, ctx);
+      log('llm_output', {
+        runId: payload.runId,
+        provider: payload.provider,
+        model: payload.model,
+        tokensIn: payload.tokensIn,
+        tokensOut: payload.tokensOut,
+      });
+      await reportAmpEvent(config, log, 'amp.llm.response', payload);
     });
 
     api.on('subagent_spawning', async (event, ctx) => {

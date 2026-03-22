@@ -482,6 +482,21 @@ function currentActivityFromEvents(blockEvents: CommandEventLike[]): string | un
   return lastInteresting ? summarizeStep(lastInteresting) ?? undefined : undefined;
 }
 
+function selectDisplayEvents(blockEvents: CommandEventLike[]): CommandEventLike[] {
+  const hasNativeLlmRequest = blockEvents.some((event) => event.type === 'amp.llm.request');
+  const hasNativeLlmResponse = blockEvents.some((event) => event.type === 'amp.llm.response');
+
+  return blockEvents.filter((event) => {
+    if (event.type === 'llm.request' && hasNativeLlmRequest) {
+      return false;
+    }
+    if (event.type === 'llm.response' && hasNativeLlmResponse) {
+      return false;
+    }
+    return true;
+  });
+}
+
 function addChildStep(parent: CommandStep | null, step: CommandStep, roots: CommandStep[]) {
   if (parent) {
     parent.children.push(step);
@@ -501,6 +516,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
     const anchor = anchors[index];
     const nextAnchor = anchors[index + 1];
     const blockEvents = sorted.filter((event) => event.seq >= anchor.seq && (!nextAnchor || event.seq < nextAnchor.seq));
+    const displayEvents = selectDisplayEvents(blockEvents);
     const command =
       getString(anchor.payload.command) ??
       getString(blockEvents.find((event) => event.type === 'amp.user.command')?.payload.command) ??
@@ -512,7 +528,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
     const lastAgentReply = [...blockEvents]
       .reverse()
       .find((event) => event.type === 'amp.agent.message');
-    const lastTerminalLlmResponse = [...blockEvents]
+    const lastTerminalLlmResponse = [...displayEvents]
       .reverse()
       .find((event) => {
         if (!['llm.response', 'amp.llm.response'].includes(event.type)) return false;
@@ -576,7 +592,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
     let currentLLMStep: CommandStep | null = null;
     let currentToolStep: CommandStep | null = null;
 
-    for (const event of blockEvents) {
+    for (const event of displayEvents) {
       const payload = event.payload;
       switch (event.type) {
         case 'llm.request':
@@ -812,16 +828,16 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
           event.type === 'amp.gate.verdict' &&
           ['reject', 'ask'].includes(getString(event.payload.verdict) ?? ''),
       ).length,
-      llmTurns: blockEvents.filter((event) => event.type === 'llm.request' || event.type === 'amp.llm.request').length,
-      totalTokensIn: blockEvents.reduce((sum, event) => {
+      llmTurns: displayEvents.filter((event) => event.type === 'llm.request' || event.type === 'amp.llm.request').length,
+      totalTokensIn: displayEvents.reduce((sum, event) => {
         if (!['llm.response', 'amp.llm.response'].includes(event.type)) return sum;
         return sum + (typeof event.payload.tokensIn === 'number' ? event.payload.tokensIn : 0);
       }, 0),
-      totalTokensOut: blockEvents.reduce((sum, event) => {
+      totalTokensOut: displayEvents.reduce((sum, event) => {
         if (!['llm.response', 'amp.llm.response'].includes(event.type)) return sum;
         return sum + (typeof event.payload.tokensOut === 'number' ? event.payload.tokensOut : 0);
       }, 0),
-      totalTokens: blockEvents.reduce((sum, event) => {
+      totalTokens: displayEvents.reduce((sum, event) => {
         if (!['llm.response', 'amp.llm.response'].includes(event.type)) return sum;
         return (
           sum +
@@ -835,7 +851,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
       active: status === 'running',
       stopTargetRunId: runId,
       stepSummaries: flattenStepSummaries(steps),
-      currentActivity: currentActivityFromEvents(blockEvents),
+      currentActivity: currentActivityFromEvents(displayEvents),
       steps,
     });
   }

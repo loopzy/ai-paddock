@@ -195,4 +195,60 @@ describe('buildCommandRuns', () => {
       active: false,
     });
   });
+
+  it('prefers native amp.llm events over proxy llm events when both are present', () => {
+    const runs = buildCommandRuns([
+      event(1, 'user.command', { command: '总结一下今天的重点新闻' }),
+      event(2, 'amp.user.command', {
+        command: '总结一下今天的重点新闻',
+        runId: 'run-native-1',
+      }),
+      event(3, 'amp.llm.request', {
+        source: 'openclaw-native-hook',
+        provider: 'openrouter',
+        model: 'minimax/minimax-m2.7',
+        messageCount: 3,
+        messagesPreview: [
+          { role: 'system', text: 'You are a careful sandboxed agent.' },
+          { role: 'user', text: '总结一下今天的重点新闻' },
+        ],
+      }),
+      event(4, 'llm.request', {
+        provider: 'openrouter',
+        model: 'qwen/qwen3.5-flash-02-23',
+        messageCount: 0,
+        toolCount: 24,
+        messagesPreview: [],
+      }),
+      event(5, 'llm.response', {
+        provider: 'openrouter',
+        model: 'qwen/qwen3.5-flash-02-23',
+        tokensIn: 999,
+        tokensOut: 88,
+        responsePreview: '[tool] web_search',
+      }),
+      event(6, 'amp.llm.response', {
+        source: 'openclaw-native-hook',
+        provider: 'openrouter',
+        model: 'minimax/minimax-m2.7',
+        tokensIn: 1234,
+        tokensOut: 56,
+        responseText: '这是今天的重点新闻摘要。',
+        responsePreview: '这是今天的重点新闻摘要。',
+      }),
+    ]);
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      llmTurns: 1,
+      totalTokensIn: 1234,
+      totalTokensOut: 56,
+      responseText: '这是今天的重点新闻摘要。',
+    });
+    expect(runs[0]?.steps).toHaveLength(1);
+    expect(runs[0]?.steps[0]).toMatchObject({
+      title: 'minimax/minimax-m2.7',
+      body: '这是今天的重点新闻摘要。',
+    });
+  });
 });

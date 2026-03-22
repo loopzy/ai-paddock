@@ -34,6 +34,7 @@ const EXACT_TOOL_BOUNDARIES = new Map<string, OpenClawOperationProfileEntry>([
   ['sessions_yield', { toolName: 'sessions_yield', boundary: 'control-plane-routed', monitorLayer: 'amp-control', description: 'Yield until sub-agent work completes' }],
   ['session_status', { toolName: 'session_status', boundary: 'control-plane-routed', monitorLayer: 'amp-control', description: 'Read session status through the control plane' }],
   ['subagents', { toolName: 'subagents', boundary: 'control-plane-routed', monitorLayer: 'amp-control', description: 'Manage spawned sub-agents' }],
+  ['llm_prepare', { toolName: 'llm_prepare', boundary: 'control-plane-routed', monitorLayer: 'amp-control', description: 'Fetch host-side LLM policy overrides for native agent hooks' }],
   ['cron', { toolName: 'cron', boundary: 'control-plane-routed', monitorLayer: 'amp-control', description: 'Schedule future agent actions' }],
   ['rollback', { toolName: 'rollback', boundary: 'control-plane-routed', monitorLayer: 'amp-control', description: 'Restore a checkpoint or snapshot' }],
 

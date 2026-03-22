@@ -602,6 +602,24 @@ export function registerRoutes(app: FastifyInstance, deps: Deps) {
         reply.code(400);
         return { error: `Unsupported subagents action: ${action}` };
       }
+      case 'llm_prepare': {
+        const provider = typeof args.provider === 'string' ? args.provider.trim().toLowerCase() : '';
+        const currentModel = typeof args.model === 'string' ? args.model.trim() : '';
+        const storedModel = provider ? llmConfigStore.getModel(provider) : null;
+
+        if (!provider) {
+          return {
+            modelOverride: currentModel || undefined,
+            source: storedModel ? 'llm-config-store' : 'request',
+          };
+        }
+
+        return {
+          providerOverride: provider,
+          modelOverride: storedModel || currentModel || undefined,
+          source: storedModel ? 'llm-config-store' : 'request',
+        };
+      }
       case 'rollback': {
         if (typeof args.snapshotId === 'string') {
           const snapshot = snapshotManager.get(args.snapshotId);

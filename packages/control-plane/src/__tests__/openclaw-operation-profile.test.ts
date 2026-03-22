@@ -18,6 +18,7 @@ describe('openclaw-operation-profile', () => {
     expect(classifyOpenClawToolBoundary('session_status')).toBe('control-plane-routed');
     expect(classifyOpenClawToolBoundary('cron')).toBe('control-plane-routed');
     expect(classifyOpenClawToolBoundary('rollback')).toBe('control-plane-routed');
+    expect(classifyOpenClawToolBoundary('llm_prepare')).toBe('control-plane-routed');
   });
 
   it('keeps external delivery and host-boundary tools on MCP', () => {

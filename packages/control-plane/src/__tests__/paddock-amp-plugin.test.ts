@@ -376,6 +376,171 @@ describe('paddock-amp-plugin', () => {
     );
   });
 
+  it('reports native structured llm_input and llm_output events to AMP', async () => {
+    const plugin = await loadPlugin();
+    const api = createApi();
+    plugin.register(api);
+
+    const llmInput = handlers.get('llm_input');
+    const llmOutput = handlers.get('llm_output');
+
+    expect(llmInput).toBeTypeOf('function');
+    expect(llmOutput).toBeTypeOf('function');
+
+    await llmInput?.(
+      {
+        runId: 'run-llm-1',
+        sessionId: 'oc-session-1',
+        provider: 'openrouter',
+        model: 'minimax/minimax-m2.7',
+        systemPrompt: 'You are a careful sandboxed agent.',
+        prompt: '请帮我总结一下今天的新闻',
+        historyMessages: [
+          { role: 'user', content: [{ type: 'text', text: '先记住我关注国际新闻。' }] },
+          { role: 'assistant', content: [{ type: 'text', text: '好的，我会重点关注国际新闻。' }] },
+        ],
+        imagesCount: 1,
+      },
+      {
+        sessionKey: 'paddock:test',
+        agentId: 'main',
+      },
+    );
+
+    await llmOutput?.(
+      {
+        runId: 'run-llm-1',
+        sessionId: 'oc-session-1',
+        provider: 'openrouter',
+        model: 'minimax/minimax-m2.7',
+        assistantTexts: ['这是今天的新闻摘要。'],
+        lastAssistant: { role: 'assistant', content: [{ type: 'text', text: '这是今天的新闻摘要。' }] },
+        usage: {
+          input: 1234,
+          output: 56,
+          total: 1290,
+        },
+      },
+      {
+        sessionKey: 'paddock:test',
+        agentId: 'main',
+      },
+    );
+
+    const ampEventCalls = fetchMock.mock.calls
+      .filter(([url]) => String(url).includes('/amp/event'))
+      .map(([, init]) => JSON.parse(String((init as RequestInit | undefined)?.body ?? '{}')) as {
+        toolName: string;
+        result: string;
+      });
+
+    const llmRequest = ampEventCalls
+      .filter((entry) => entry.toolName === 'amp.llm.request')
+      .map((entry) => JSON.parse(entry.result) as Record<string, unknown>);
+    const llmResponse = ampEventCalls
+      .filter((entry) => entry.toolName === 'amp.llm.response')
+      .map((entry) => JSON.parse(entry.result) as Record<string, unknown>);
+
+    expect(llmRequest).toEqual([
+      expect.objectContaining({
+        source: 'openclaw-native-hook',
+        provider: 'openrouter',
+        model: 'minimax/minimax-m2.7',
+        runId: 'run-llm-1',
+        sessionId: 'oc-session-1',
+        sessionKey: 'paddock:test',
+        agentId: 'main',
+        imagesCount: 1,
+        messageCount: 4,
+        messagesPreview: [
+          { role: 'system', text: 'You are a careful sandboxed agent.' },
+          { role: 'user', text: '先记住我关注国际新闻。' },
+          { role: 'assistant', text: '好的，我会重点关注国际新闻。' },
+          { role: 'user', text: '请帮我总结一下今天的新闻' },
+        ],
+        request: expect.objectContaining({
+          systemPrompt: 'You are a careful sandboxed agent.',
+          prompt: '请帮我总结一下今天的新闻',
+        }),
+      }),
+    ]);
+
+    expect(llmResponse).toEqual([
+      expect.objectContaining({
+        source: 'openclaw-native-hook',
+        provider: 'openrouter',
+        model: 'minimax/minimax-m2.7',
+        runId: 'run-llm-1',
+        sessionId: 'oc-session-1',
+        sessionKey: 'paddock:test',
+        agentId: 'main',
+        tokensIn: 1234,
+        tokensOut: 56,
+        responseText: '这是今天的新闻摘要。',
+        responsePreview: '这是今天的新闻摘要。',
+        response: expect.objectContaining({
+          assistantTexts: ['这是今天的新闻摘要。'],
+        }),
+      }),
+    ]);
+  });
+
+  it('uses before_model_resolve to fetch host-side model overrides without exposing keys', async () => {
+    fetchMock.mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).includes('/amp/control')) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              providerOverride: 'openrouter',
+              modelOverride: 'qwen/qwen3.5-flash-02-23',
+            }),
+        };
+      }
+      return {
+        ok: true,
+        text: async () => JSON.stringify({ ok: true }),
+      };
+    });
+
+    const plugin = await loadPlugin();
+    const api = createApi();
+    plugin.register(api);
+
+    const beforeModelResolve = handlers.get('before_model_resolve');
+    expect(beforeModelResolve).toBeTypeOf('function');
+
+    const result = await beforeModelResolve?.(
+      {
+        provider: 'openrouter',
+        model: 'minimax/minimax-m2.7',
+      },
+      {
+        sessionKey: 'paddock:test',
+        agentId: 'main',
+        runId: 'run-llm-prepare',
+      },
+    );
+
+    expect(result).toEqual({
+      providerOverride: 'openrouter',
+      modelOverride: 'qwen/qwen3.5-flash-02-23',
+    });
+
+    const controlCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/amp/control'));
+    expect(controlCall).toBeTruthy();
+    expect(JSON.parse(String((controlCall?.[1] as RequestInit | undefined)?.body ?? '{}'))).toEqual({
+      toolName: 'llm_prepare',
+      args: {
+        provider: 'openrouter',
+        model: 'minimax/minimax-m2.7',
+        runId: 'run-llm-prepare',
+        sessionKey: 'paddock:test',
+        agentId: 'main',
+      },
+    });
+  });
+
   it('normalizes shell-style write paths before reporting intent and continuing execution', async () => {
     const plugin = await loadPlugin();
     const api = createApi();

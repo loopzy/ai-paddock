@@ -86,6 +86,7 @@ async function createContext(execHook?: ExecHook) {
     app,
     eventStore,
     sessionManager,
+    llmConfigStore,
   };
 }
 
@@ -178,6 +179,40 @@ describe('Control-plane boundary routes', () => {
       const body = response.json();
       expect(body.sessions.length).toBeGreaterThanOrEqual(2);
       expect(body.sessions.some((session: { id: string }) => session.id === source.id)).toBe(true);
+    } finally {
+      await ctx.app.close();
+      ctx.eventStore.close();
+    }
+  });
+
+  it('returns live host-side model overrides through /amp/control llm_prepare', async () => {
+    const ctx = await createContext();
+
+    try {
+      ctx.llmConfigStore.upsert('openrouter', {
+        apiKey: 'test-key',
+        model: 'qwen/qwen3.5-flash-02-23',
+      });
+      const session = await createRunningSession(ctx);
+
+      const response = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/amp/control`,
+        payload: {
+          toolName: 'llm_prepare',
+          args: {
+            provider: 'openrouter',
+            model: 'minimax/minimax-m2.7',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        providerOverride: 'openrouter',
+        modelOverride: 'qwen/qwen3.5-flash-02-23',
+        source: 'llm-config-store',
+      });
     } finally {
       await ctx.app.close();
       ctx.eventStore.close();
