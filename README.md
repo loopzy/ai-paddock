@@ -94,8 +94,8 @@ Create and manage sandboxes, deploy agents, send commands, view semantic executi
 ### 📋 Tamper-Proof Audit Trail
 Every event is stored in SQLite with a SHA-256 hash chain. Each event's hash is computed from `SHA256(prev_hash + id + seq + type + payload)`, creating an immutable audit trail where tampering breaks the chain.
 
-### 🎛️ Optional LLM Behavior Review
-An optional LLM-powered behavior reviewer can be enabled to provide semantic risk scoring alongside the deterministic security engine. Supports Ollama (local) and OpenAI-compatible APIs.
+### 🎛️ Optional Local LLM Review + Sanitization
+An optional local-LLM layer can review native `amp.llm.request` / `amp.llm.response` events and build sanitized summaries for audit. Review and sanitization are configured independently, so you can later swap in a specialist model for either task.
 
 ## Architecture
 
@@ -382,14 +382,21 @@ The Dashboard provides two views:
 
 | View | Description |
 |------|-------------|
-| **Commands** | Semantic execution tree — user commands, LLM turns, tool intents, verdicts, results, final replies |
+| **Commands** | Semantic execution tree — user commands, model steps, model reviews, tool intents, verdicts, results, final replies |
 | **Raw Logs** | Full event stream for debugging and forensic audit |
 
-## Optional: Enable LLM Behavior Review
+## Optional: Enable Local LLM Review and Observation Sanitization
 
-The default security pipeline is fully deterministic (Rule Engine → Taint Tracker → Behavior Analyzer). You can optionally enable an **LLM-powered behavior reviewer** for semantic risk scoring:
+The default security pipeline is fully deterministic (Rule Engine → Taint Tracker → Behavior Analyzer). You can optionally add two independent local-LLM modules for native `amp.llm.request` / `amp.llm.response` events:
 
-### Using Ollama (Local)
+- **LLM audit reviewer**: emits `amp.llm.review`, adds semantic risk signals, can escalate later tools into HITL, and can hard-block follow-up tools after a dangerous model response.
+- **LLM observation sanitizer**: produces `reviewSanitization` summaries and detail reductions for Dashboard and review inputs so audit flows do not rely on raw prompts or responses.
+
+The Dashboard surfaces these results as readable `Model review` cards and top-level run highlights such as `Prompt needs approval` or `Response blocked`.
+
+If you do not set a dedicated reviewer or sanitizer config, both modules automatically fall back to the existing `PADDOCK_BEHAVIOR_LLM_*` settings.
+
+### Reuse the Existing Behavior Review Model
 
 ```bash
 export PADDOCK_BEHAVIOR_LLM_ENABLED=1
@@ -398,15 +405,36 @@ export PADDOCK_BEHAVIOR_LLM_MODEL=qwen3:0.6b
 export PADDOCK_BEHAVIOR_LLM_BASE_URL=http://127.0.0.1:11434
 ```
 
-### Using OpenAI-Compatible API
+### Use a Dedicated Local Model for Observation Sanitization
 
 ```bash
-export PADDOCK_BEHAVIOR_LLM_ENABLED=1
-export PADDOCK_BEHAVIOR_LLM_PROVIDER=openai-compatible
-export PADDOCK_BEHAVIOR_LLM_MODEL=gpt-4.1-mini
-export PADDOCK_BEHAVIOR_LLM_BASE_URL=https://your-endpoint/v1
-export PADDOCK_BEHAVIOR_LLM_API_KEY=your-key
+export PADDOCK_LLM_SANITIZER_ENABLED=1
+export PADDOCK_LLM_SANITIZER_PROVIDER=ollama
+export PADDOCK_LLM_SANITIZER_MODEL=qwen3:0.6b
+export PADDOCK_LLM_SANITIZER_BASE_URL=http://127.0.0.1:11434
+export PADDOCK_LLM_SANITIZER_TIMEOUT_MS=30000
+export PADDOCK_LLM_SANITIZER_MAX_TOKENS=300
 ```
+
+### Use a Dedicated Review Model for Prompt / Response Audit
+
+```bash
+export PADDOCK_LLM_AUDIT_ENABLED=1
+export PADDOCK_LLM_AUDIT_PROVIDER=openai-compatible
+export PADDOCK_LLM_AUDIT_MODEL=gpt-4.1-mini
+export PADDOCK_LLM_AUDIT_BASE_URL=https://your-endpoint/v1
+export PADDOCK_LLM_AUDIT_API_KEY=your-key
+export PADDOCK_LLM_AUDIT_TIMEOUT_MS=8000
+export PADDOCK_LLM_AUDIT_MAX_TOKENS=300
+```
+
+Both dedicated interfaces also support:
+
+- `*_TEMPERATURE`
+- `*_MAX_TOKENS`
+- `*_TIMEOUT_MS`
+
+Where `*` is either `PADDOCK_LLM_SANITIZER` or `PADDOCK_LLM_AUDIT`.
 
 ## Supported LLM Providers
 
@@ -425,6 +453,7 @@ export PADDOCK_BEHAVIOR_LLM_API_KEY=your-key
 - ✅ End-to-end event stream: LLM, tools, file changes, security verdicts
 - ✅ 4-layer security engine: rules, taint tracking, behavior analysis, trust decay
 - ✅ Optional LLM behavior review layer
+- ✅ Independent local-LLM prompt/response review + observation sanitization
 - ✅ Dashboard semantic execution tree + raw log views
 - ✅ Sensitive Data Vault (auto-mask secrets in LLM traffic)
 - 🔜 Intent injection semantic review module

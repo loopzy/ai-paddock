@@ -86,8 +86,8 @@ API 密钥**永远不进入沙盒**。Agent 使用假密钥；Sidecar LLM Proxy 
 ### 📋 防篡改审计链
 每个事件存储在 SQLite 中，附带 SHA-256 哈希链。每个事件的哈希由 `SHA256(prev_hash + id + seq + type + payload)` 计算，构成不可篡改的审计轨迹。
 
-### 🎛️ 可选 LLM 行为审核
-可启用基于 LLM 的行为审核器，在确定性安全引擎之上提供语义级风险评分。支持 Ollama（本地）和 OpenAI 兼容 API。
+### 🎛️ 可选本地 LLM 审核与脱敏
+可选启用本地 LLM，对原生 `amp.llm.request` / `amp.llm.response` 事件做语义审核，并生成审计用的脱敏摘要。审核和脱敏是两套独立接口，后续可以分别替换成更专业的模型。
 
 ## 架构
 
@@ -364,14 +364,21 @@ Dashboard 提供两种视图：
 
 | 视图 | 说明 |
 |------|------|
-| **Commands** | 语义级执行树——用户命令、LLM turn、工具意图、裁决、结果、最终回复 |
+| **Commands** | 语义级执行树——用户命令、模型步骤、模型审核、工具意图、裁决、结果、最终回复 |
 | **Raw Logs** | 完整事件流，用于排障和取证审计 |
 
-## 可选：启用 LLM 行为审核
+## 可选：启用本地 LLM 审核与观测脱敏
 
-默认安全流水线是完全确定性的（规则引擎 → 污点追踪 → 行为分析）。可选启用 **LLM 行为审核器** 进行语义级风险评分：
+默认安全流水线是完全确定性的（规则引擎 → 污点追踪 → 行为分析）。你还可以给原生 `amp.llm.request` / `amp.llm.response` 事件增加两套彼此独立的本地 LLM 模块：
 
-### 使用 Ollama（本地）
+- **LLM 审核器**：产出 `amp.llm.review`，给 prompt/response 增加语义风险信号，可把后续工具抬进 HITL，也可以在危险回复后直接拦截后续工具。
+- **LLM 观测脱敏器**：产出 `reviewSanitization` 摘要和细节压缩，用于 Dashboard 展示和审核输入，不再依赖原始 prompt/response。
+
+Dashboard 会把这些结果显示成可读的 `Model review` 卡片，以及 `Prompt needs approval`、`Response blocked` 这类顶层摘要标签。
+
+如果你没有给审核器或脱敏器单独配置模型，它们会自动回退到现有的 `PADDOCK_BEHAVIOR_LLM_*` 行为审核配置。
+
+### 复用现有行为审核模型
 
 ```bash
 export PADDOCK_BEHAVIOR_LLM_ENABLED=1
@@ -380,15 +387,36 @@ export PADDOCK_BEHAVIOR_LLM_MODEL=qwen3:0.6b
 export PADDOCK_BEHAVIOR_LLM_BASE_URL=http://127.0.0.1:11434
 ```
 
-### 使用 OpenAI 兼容 API
+### 为观测脱敏单独指定本地模型
 
 ```bash
-export PADDOCK_BEHAVIOR_LLM_ENABLED=1
-export PADDOCK_BEHAVIOR_LLM_PROVIDER=openai-compatible
-export PADDOCK_BEHAVIOR_LLM_MODEL=gpt-4.1-mini
-export PADDOCK_BEHAVIOR_LLM_BASE_URL=https://your-endpoint/v1
-export PADDOCK_BEHAVIOR_LLM_API_KEY=your-key
+export PADDOCK_LLM_SANITIZER_ENABLED=1
+export PADDOCK_LLM_SANITIZER_PROVIDER=ollama
+export PADDOCK_LLM_SANITIZER_MODEL=qwen3:0.6b
+export PADDOCK_LLM_SANITIZER_BASE_URL=http://127.0.0.1:11434
+export PADDOCK_LLM_SANITIZER_TIMEOUT_MS=30000
+export PADDOCK_LLM_SANITIZER_MAX_TOKENS=300
 ```
+
+### 为 prompt / response 审核单独指定模型
+
+```bash
+export PADDOCK_LLM_AUDIT_ENABLED=1
+export PADDOCK_LLM_AUDIT_PROVIDER=openai-compatible
+export PADDOCK_LLM_AUDIT_MODEL=gpt-4.1-mini
+export PADDOCK_LLM_AUDIT_BASE_URL=https://your-endpoint/v1
+export PADDOCK_LLM_AUDIT_API_KEY=your-key
+export PADDOCK_LLM_AUDIT_TIMEOUT_MS=8000
+export PADDOCK_LLM_AUDIT_MAX_TOKENS=300
+```
+
+这两套独立接口还支持：
+
+- `*_TEMPERATURE`
+- `*_MAX_TOKENS`
+- `*_TIMEOUT_MS`
+
+其中 `*` 分别是 `PADDOCK_LLM_SANITIZER` 或 `PADDOCK_LLM_AUDIT`。
 
 ## 支持的 LLM 提供商
 
@@ -407,6 +435,7 @@ export PADDOCK_BEHAVIOR_LLM_API_KEY=your-key
 - ✅ 全链路事件流：LLM、工具、文件变化、安全裁决
 - ✅ 4 层安全引擎：规则、污点追踪、行为分析、信任衰减
 - ✅ 可选 LLM 行为审核层
+- ✅ 独立本地 LLM prompt/response 审核与观测脱敏
 - ✅ Dashboard 语义执行树 + 原始日志双视图
 - ✅ 敏感数据保险库（自动遮蔽 LLM 流量中的密钥）
 - 🔜 意图注入语义审查模块

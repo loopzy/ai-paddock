@@ -2,6 +2,7 @@
 const badgeConfig: Record<string, { label: string; bg: string; text: string }> = {
   'amp.llm.request': { label: 'Model', bg: 'bg-sky-100', text: 'text-sky-700' },
   'amp.llm.response': { label: 'Model', bg: 'bg-sky-100', text: 'text-sky-700' },
+  'amp.llm.review': { label: 'Safety', bg: 'bg-amber-100', text: 'text-amber-700' },
   'amp.thought': { label: 'Thinking', bg: 'bg-sky-100', text: 'text-sky-700' },
   'amp.trace': { label: 'System', bg: 'bg-stone-200', text: 'text-stone-700' },
   'amp.tool.intent': { label: 'Tool', bg: 'bg-violet-100', text: 'text-violet-700' },
@@ -34,6 +35,7 @@ const eventDisplayNames: Record<string, string> = {
   'amp.llm.request': 'Model request',
   'llm.response': 'Model response',
   'amp.llm.response': 'Model response',
+  'amp.llm.review': 'Model review',
   'amp.thought': 'Model reasoning',
   'amp.tool.intent': 'Tool started',
   'amp.tool.result': 'Tool finished',

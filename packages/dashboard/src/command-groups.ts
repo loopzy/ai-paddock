@@ -16,6 +16,7 @@ export interface CommandTag {
 
 export type CommandStepKind =
   | 'llm-request'
+  | 'llm-review'
   | 'llm-response'
   | 'tool-intent'
   | 'gate-verdict'
@@ -179,6 +180,62 @@ function formatLlmResponseDetail(payload: Record<string, unknown>): string | und
   return lines.length > 0 ? lines.join('\n\n') : undefined;
 }
 
+function formatLlmReviewDetail(payload: Record<string, unknown>): string | undefined {
+  const lines: string[] = [];
+  const sanitizer =
+    payload.sanitizer && typeof payload.sanitizer === 'object'
+      ? (payload.sanitizer as Record<string, unknown>)
+      : undefined;
+  const review =
+    payload.review && typeof payload.review === 'object'
+      ? (payload.review as Record<string, unknown>)
+      : undefined;
+
+  const header: string[] = [];
+  const phase = getString(payload.phase);
+  const reviewVerdict = getString(review?.verdict);
+  const reviewSource = getString(review?.source);
+  const sanitizerSource = getString(sanitizer?.source);
+  const reviewRisk = typeof review?.riskScore === 'number' ? review.riskScore : undefined;
+
+  if (phase) header.push(`phase: ${phase}`);
+  if (reviewVerdict) header.push(`verdict: ${reviewVerdict}`);
+  if (reviewRisk !== undefined) header.push(`risk: ${reviewRisk}`);
+  if (reviewSource) header.push(`reviewer: ${reviewSource}`);
+  if (sanitizerSource) header.push(`sanitizer: ${sanitizerSource}`);
+  if (header.length > 0) {
+    lines.push(header.join(' · '));
+  }
+
+  const sanitizerSummary = getString(sanitizer?.summary);
+  if (sanitizerSummary) {
+    lines.push(`Sanitized summary\n${sanitizerSummary}`);
+  }
+
+  const sanitizerDetailLines = formatKeyValueLines(sanitizer?.details);
+  if (sanitizerDetailLines.length > 0) {
+    lines.push(`Sanitized details\n${sanitizerDetailLines.join('\n')}`);
+  }
+
+  const reviewReason = getString(review?.reason);
+  if (reviewReason) {
+    lines.push(`Review reason\n${reviewReason}`);
+  }
+
+  const reviewTriggered = Array.isArray(review?.triggered)
+    ? review.triggered.filter((value): value is string => typeof value === 'string')
+    : [];
+  if (reviewTriggered.length > 0) {
+    lines.push(`Triggered signals\n${reviewTriggered.join(', ')}`);
+  }
+
+  if (typeof review?.confidence === 'number') {
+    lines.push(`Confidence\n${review.confidence}`);
+  }
+
+  return lines.length > 0 ? lines.join('\n\n') : undefined;
+}
+
 function getTokenUsage(payload: Record<string, unknown>): {
   tokensIn?: number;
   tokensOut?: number;
@@ -240,6 +297,26 @@ function formatGateVerdictDetail(payload: Record<string, unknown>): string | und
     }
     if (reason) {
       lines.push(`Review reason: ${reason}`);
+    }
+  }
+  const llmReview = payload.llmReview && typeof payload.llmReview === 'object'
+    ? (payload.llmReview as Record<string, unknown>)
+    : undefined;
+  if (llmReview) {
+    const verdict = getString(llmReview.verdict);
+    const source = getString(llmReview.source);
+    const reason = getString(llmReview.reason);
+    const summary = getString(llmReview.summary);
+    const risk = typeof llmReview.riskScore === 'number' ? llmReview.riskScore : undefined;
+    const header = [verdict, source, risk !== undefined ? `risk ${risk}` : undefined].filter(Boolean).join(' · ');
+    if (header) {
+      lines.push(`LLM review: ${header}`);
+    }
+    if (summary) {
+      lines.push(`LLM review summary: ${summary}`);
+    }
+    if (reason) {
+      lines.push(`LLM review reason: ${reason}`);
     }
   }
   return lines.length > 0 ? lines.join('\n\n') : undefined;
@@ -368,6 +445,54 @@ function summarizeLLMResponse(payload: Record<string, unknown>): string {
   return 'Response received';
 }
 
+function getLLMReviewPhase(payload: Record<string, unknown>): 'request' | 'response' {
+  return getString(payload.phase) === 'response' ? 'response' : 'request';
+}
+
+function getLLMReviewVerdict(payload: Record<string, unknown>): string | undefined {
+  const review =
+    payload.review && typeof payload.review === 'object'
+      ? (payload.review as Record<string, unknown>)
+      : undefined;
+  return getString(review?.verdict);
+}
+
+function getLLMReviewHeadline(payload: Record<string, unknown>): string {
+  const phase = getLLMReviewPhase(payload);
+  const verdict = getLLMReviewVerdict(payload);
+  const prefix = phase === 'response' ? 'Response' : 'Prompt';
+  switch (verdict) {
+    case 'ask':
+      return `${prefix} needs approval`;
+    case 'block':
+      return `${prefix} blocked`;
+    case 'warn':
+      return `${prefix} warning`;
+    case 'allow':
+      return `${prefix} reviewed`;
+    default:
+      return `${prefix} sanitized`;
+  }
+}
+
+function summarizeLLMReview(payload: Record<string, unknown>): string {
+  const review =
+    payload.review && typeof payload.review === 'object'
+      ? (payload.review as Record<string, unknown>)
+      : undefined;
+  const sanitizer =
+    payload.sanitizer && typeof payload.sanitizer === 'object'
+      ? (payload.sanitizer as Record<string, unknown>)
+      : undefined;
+  const reviewReason = getString(review?.reason);
+  if (reviewReason) return truncateText(collapseWhitespace(reviewReason), 160);
+  const sanitizerSummary = getString(sanitizer?.summary);
+  if (sanitizerSummary) return truncateText(collapseWhitespace(sanitizerSummary), 160);
+  const verdict = getString(review?.verdict);
+  if (verdict) return `Review ${verdict}`;
+  return 'Review completed';
+}
+
 function summarizeStep(event: CommandEventLike): string | null {
   const payload = event.payload;
   switch (event.type) {
@@ -377,6 +502,8 @@ function summarizeStep(event: CommandEventLike): string | null {
     case 'llm.response':
     case 'amp.llm.response':
       return `LLM response: ${summarizeLLMResponse(payload)}`;
+    case 'amp.llm.review':
+      return `${getLLMReviewHeadline(payload)}: ${summarizeLLMReview(payload)}`;
     case 'amp.tool.intent': {
       const toolName = getString(payload.toolName) ?? 'tool';
       const toolInput =
@@ -477,7 +604,7 @@ function currentActivityFromEvents(blockEvents: CommandEventLike[]): string | un
   const lastInteresting = [...blockEvents]
     .reverse()
     .find((event) =>
-      ['llm.request', 'llm.response', 'amp.tool.intent', 'amp.tool.result', 'amp.gate.verdict', 'amp.command.status', 'amp.agent.message', 'amp.agent.error', 'amp.agent.fatal'].includes(event.type),
+      ['llm.request', 'llm.response', 'amp.llm.review', 'amp.tool.intent', 'amp.tool.result', 'amp.gate.verdict', 'amp.command.status', 'amp.agent.message', 'amp.agent.error', 'amp.agent.fatal'].includes(event.type),
     );
   return lastInteresting ? summarizeStep(lastInteresting) ?? undefined : undefined;
 }
@@ -738,6 +865,48 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
             steps.push(fallback);
             currentLLMStep = fallback;
           }
+          break;
+        }
+        case 'amp.llm.review': {
+          const review =
+            payload.review && typeof payload.review === 'object'
+              ? (payload.review as Record<string, unknown>)
+              : undefined;
+          const sanitizer =
+            payload.sanitizer && typeof payload.sanitizer === 'object'
+              ? (payload.sanitizer as Record<string, unknown>)
+              : undefined;
+          const verdict = getString(review?.verdict);
+          const riskScore = typeof review?.riskScore === 'number' ? review.riskScore : undefined;
+          const phase = getLLMReviewPhase(payload);
+          const tags: CommandTag[] = [];
+          const primaryTagTone =
+            verdict === 'allow' ? 'success' :
+            verdict === 'warn' ? 'warning' :
+            verdict === 'ask' ? 'warning' :
+            verdict === 'block' ? 'danger' :
+            'info';
+          tags.push({ label: getLLMReviewHeadline(payload), tone: primaryTagTone });
+          if (riskScore !== undefined) {
+            tags.push({
+              label: `Risk ${riskScore}`,
+              tone: riskScore >= 80 ? 'danger' : riskScore >= 40 ? 'warning' : 'neutral',
+            });
+          }
+          const step = createStep(
+            event,
+            'llm-review',
+            getLLMReviewHeadline(payload),
+            getString(review?.source) ?? getString(sanitizer?.source),
+            tags,
+            summarizeLLMReview(payload),
+            formatLlmReviewDetail(payload),
+            undefined,
+            appendRawSection(undefined, 'Review payload', payload),
+            'Review details',
+            verdict === 'block' ? 'failed' : verdict === 'ask' ? 'blocked' : 'completed',
+          );
+          addChildStep(currentLLMStep, step, steps);
           break;
         }
         case 'amp.tool.intent': {

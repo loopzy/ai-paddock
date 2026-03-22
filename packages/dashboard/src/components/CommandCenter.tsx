@@ -68,6 +68,7 @@ function StepTone({ status }: { status?: CommandStep['status'] }) {
 function StepKindPill({ kind }: { kind: CommandStep['kind'] }) {
   const tone: Record<CommandStep['kind'], string> = {
     'llm-request': 'bg-sky-100 text-sky-700 border-sky-200',
+    'llm-review': 'bg-amber-100 text-amber-700 border-amber-200',
     'tool-intent': 'bg-violet-100 text-violet-700 border-violet-200',
     'llm-response': 'bg-blue-100 text-blue-700 border-blue-200',
     'gate-verdict': 'bg-amber-100 text-amber-700 border-amber-200',
@@ -79,6 +80,7 @@ function StepKindPill({ kind }: { kind: CommandStep['kind'] }) {
   };
   const label: Record<CommandStep['kind'], string> = {
     'llm-request': 'Model step',
+    'llm-review': 'Model review',
     'llm-response': 'Model output',
     'tool-intent': 'Using tool',
     'gate-verdict': 'Safety check',
@@ -181,6 +183,8 @@ function markdownLabelsForStep(step: CommandStep): { expandLabel: string; collap
   switch (step.kind) {
     case 'llm-request':
       return { expandLabel: 'Expand All', collapseLabel: 'Collapse prompt' };
+    case 'llm-review':
+      return { expandLabel: 'Expand review', collapseLabel: 'Collapse review' };
     case 'llm-response':
     case 'agent-message':
       return { expandLabel: 'Expand full reply', collapseLabel: 'Collapse full reply' };
@@ -195,6 +199,7 @@ function detailLabelsForStep(step: CommandStep): { expandLabel: string; collapse
   switch (step.kind) {
     case 'llm-request':
       return { expandLabel: 'Expand All', collapseLabel: 'Collapse prompt' };
+    case 'llm-review':
     case 'tool-intent':
     case 'tool-result':
       return { expandLabel: 'Expand full details', collapseLabel: 'Collapse details' };

@@ -24,7 +24,7 @@ export type EventType =
   | 'snapshot.restored'
   | 'session.status'
   // AMP event types
-  | 'amp.llm.request' | 'amp.llm.response'
+  | 'amp.llm.request' | 'amp.llm.response' | 'amp.llm.review'
   | 'amp.tool.intent' | 'amp.tool.result'
   | 'amp.thought'
   | 'amp.trace'

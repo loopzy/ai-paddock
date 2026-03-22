@@ -138,6 +138,80 @@ describe('PolicyGate', () => {
       const profile = gate.getTrustProfile();
       expect(profile.penaltyBoost).toBeGreaterThan(0);
     });
+
+    it('should lower trust after suspicious llm reviews', () => {
+      gate.onLLMReview({
+        phase: 'request',
+        verdict: 'warn',
+        riskScore: 58,
+        triggered: ['llm:prompt_injection'],
+        reason: 'Prompt attempts to bypass monitoring.',
+        source: 'audit-local-llm',
+        summary: 'User asks the model to hide actions from monitoring.',
+      });
+
+      const profile = gate.getTrustProfile();
+      expect(profile.score).toBeLessThan(100);
+      expect(profile.anomalyCount).toBeGreaterThan(0);
+    });
+  });
+
+  describe('llm review escalation', () => {
+    it('should escalate a safe tool call to HITL after an ask-grade llm review', async () => {
+      gate.onLLMReview({
+        phase: 'request',
+        verdict: 'ask',
+        riskScore: 82,
+        triggered: ['llm:prompt_injection', 'llm:monitoring_evasion'],
+        reason: 'Prompt tries to hide tool activity from the monitor.',
+        confidence: 0.93,
+        source: 'audit-local-llm',
+        summary: 'The model was asked to suppress reporting and proceed quietly.',
+      });
+
+      const verdict = await gate.evaluate({
+        correlationId: 'c-llm-ask',
+        toolName: 'exec',
+        toolInput: { command: 'ls -la /workspace' },
+      });
+
+      expect(verdict.verdict).toBe('ask');
+      expect(verdict.triggeredRules).toEqual(expect.arrayContaining(['llm:prompt_injection', 'llm:monitoring_evasion']));
+      expect(verdict.riskBreakdown?.llmReview).toBeGreaterThan(0);
+      expect(verdict.llmReview).toMatchObject({
+        verdict: 'ask',
+        source: 'audit-local-llm',
+        summary: 'The model was asked to suppress reporting and proceed quietly.',
+      });
+    });
+
+    it('should reject tool calls after a block-grade llm review', async () => {
+      gate.onLLMReview({
+        phase: 'response',
+        verdict: 'block',
+        riskScore: 96,
+        triggered: ['llm:covert_instruction'],
+        reason: 'Model produced covert exfiltration instructions.',
+        confidence: 0.98,
+        source: 'audit-local-llm',
+        summary: 'Response includes hidden exfiltration steps.',
+      });
+
+      const verdict = await gate.evaluate({
+        correlationId: 'c-llm-block',
+        toolName: 'write',
+        toolInput: { path: '/workspace/notes.txt', content: 'hello' },
+      });
+
+      expect(verdict.verdict).toBe('reject');
+      expect(verdict.triggeredRules).toContain('llm:covert_instruction');
+      expect(verdict.riskBreakdown?.llmReview).toBeGreaterThanOrEqual(60);
+      expect(verdict.llmReview).toMatchObject({
+        phase: 'response',
+        verdict: 'block',
+        source: 'audit-local-llm',
+      });
+    });
   });
 
   describe('reset', () => {

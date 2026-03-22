@@ -10,6 +10,9 @@ import { AgentMonitor } from './agent-monitor.js';
 import { abortAgentCommand, createOpenClawGatewayAborter, createOpenClawGatewayInvoker, routeAgentCommand } from './command-router.js';
 import type { AMPGateRequest, AMPGateVerdict, AMPAgentError } from '@paddock/types';
 import { SensitiveDataVault } from './vault/sensitive-data-vault.js';
+import { HeuristicLLMObservationSanitizer, type LLMObservationSanitizer } from './security/llm-observation-sanitizer.js';
+import type { LLMObservationReviewer } from './security/llm-observation-reviewer.js';
+import { createLLMObservationReviewerFromEnv, createLLMObservationSanitizerFromEnv } from './security/llm-observation-factory.js';
 
 const COMMAND_FILE = process.env.PADDOCK_COMMAND_FILE ?? '/tmp/paddock-commands.jsonl';
 
@@ -43,6 +46,8 @@ async function main() {
     workspace: WATCH_DIR,
     behaviorAnalyzer: createBehaviorAnalyzerFromEnv(),
   });
+  const llmObservationSanitizer = createLLMObservationSanitizerFromEnv();
+  const llmObservationReviewer = createLLMObservationReviewerFromEnv();
 
   // LLM Proxy
   const llmProxy = new LLMProxy(PROXY_PORT, reporter, controlPlaneClient, SESSION_ID);
@@ -67,6 +72,8 @@ async function main() {
     policyGate,
     reporter,
     agentMonitor,
+    llmObservationSanitizer,
+    llmObservationReviewer,
   });
 
   gateServer.on('error', (err) => {
@@ -103,12 +110,15 @@ type AmpGateServerDeps = {
   reporter: EventReporter;
   agentMonitor: AgentMonitor;
   ampEventVault?: SensitiveDataVault;
+  llmObservationSanitizer?: LLMObservationSanitizer | null;
+  llmObservationReviewer?: LLMObservationReviewer | null;
 };
 
 const ROLLBACKABLE_LOCAL_TOOLS = new Set(['write', 'edit', 'apply_patch']);
 const HIGH_RISK_EXEC_PATTERN =
   /\b(apt(?:-get)?|apk|dnf|yum|pip3?|npm|pnpm|yarn)\s+(?:install|add|remove|uninstall|upgrade|update)\b|(?:^|\s)rm\s+-rf?\b|(?:^|\s)git\s+(?:clean|reset)\b/i;
 const OBSERVATIONAL_AMP_EVENTS = new Set(['amp.llm.request', 'amp.llm.response']);
+const FALLBACK_LLM_OBSERVATION_SANITIZER = new HeuristicLLMObservationSanitizer();
 
 export function createAmpGateServer(deps: AmpGateServerDeps) {
   return createServer(createAmpGateRequestHandler(deps));
@@ -145,7 +155,15 @@ export function createAmpGateRequestHandler(deps: AmpGateServerDeps) {
     if (req.method === 'POST' && req.url === '/amp/gate') {
       await handleGateRequest(req, res, deps.policyGate, deps.reporter, deps.controlPlaneClient, deps.sessionId);
     } else if (req.method === 'POST' && req.url === '/amp/event') {
-      await handleEventReport(req, res, deps.policyGate, deps.reporter, ampEventVault);
+      await handleEventReport(
+        req,
+        res,
+        deps.policyGate,
+        deps.reporter,
+        ampEventVault,
+        deps.llmObservationSanitizer ?? null,
+        deps.llmObservationReviewer ?? null,
+      );
     } else if (req.method === 'GET' && req.url === '/amp/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, sessionId: deps.sessionId }));
@@ -234,6 +252,7 @@ async function handleGateRequest(req: IncomingMessage, res: ServerResponse, gate
         behaviorFlags: verdict.behaviorFlags,
         behaviorReview: verdict.behaviorReview,
         riskBreakdown: verdict.riskBreakdown,
+        llmReview: verdict.llmReview,
         modifiedInput: verdict.modifiedInput,
         snapshotRef: verdict.snapshotRef,
       },
@@ -263,6 +282,8 @@ async function handleEventReport(
   gate: PolicyGate,
   reporter: EventReporter,
   ampEventVault: SensitiveDataVault,
+  llmObservationSanitizer: LLMObservationSanitizer | null,
+  llmObservationReviewer: LLMObservationReviewer | null,
 ) {
   try {
     const body = JSON.parse(await collectBody(req)) as {
@@ -289,13 +310,78 @@ async function handleEventReport(
       if (sanitizedResult && sanitizedResult.secretsFound > 0) {
         payload = mergeVaultSummary(payload, sanitizedResult.secretsFound, sanitizedResult.categories);
       }
-      await reporter.report(
-        body.toolName as any,
-        payload,
-        body.correlationId || body.snapshotRef
-          ? { correlationId: body.correlationId, snapshotRef: body.snapshotRef }
-          : undefined,
-      );
+      if (body.toolName === 'amp.llm.request' || body.toolName === 'amp.llm.response') {
+        const sanitizer = llmObservationSanitizer ?? FALLBACK_LLM_OBSERVATION_SANITIZER;
+        const observation =
+          body.toolName === 'amp.llm.request'
+            ? await sanitizer.sanitizeRequest(payload)
+            : await sanitizer.sanitizeResponse(payload);
+        payload = {
+          ...payload,
+          reviewSanitization: {
+            source: observation.source,
+            summary: observation.summary,
+          },
+        };
+
+        const review =
+          llmObservationReviewer == null
+            ? null
+            : body.toolName === 'amp.llm.request'
+              ? await llmObservationReviewer.reviewRequest(observation)
+              : await llmObservationReviewer.reviewResponse(observation);
+
+        if (review && typeof (gate as { onLLMReview?: unknown }).onLLMReview === 'function') {
+          gate.onLLMReview({
+            phase: review.phase,
+            verdict: review.verdict,
+            riskScore: review.riskScore,
+            triggered: review.triggered,
+            reason: review.reason,
+            confidence: review.confidence,
+            source: review.source,
+            summary: observation.summary,
+          });
+        }
+
+        await reporter.report(
+          body.toolName as any,
+          payload,
+          body.correlationId || body.snapshotRef
+            ? { correlationId: body.correlationId, snapshotRef: body.snapshotRef }
+            : undefined,
+        );
+
+        await reporter.report(
+          'amp.llm.review' as any,
+          {
+            phase: observation.phase,
+            provider: observation.provider,
+            model: observation.model,
+            runId: observation.runId,
+            sessionId: observation.sessionId,
+            sessionKey: observation.sessionKey,
+            agentId: observation.agentId,
+            sanitizer: {
+              source: observation.source,
+              summary: observation.summary,
+              details: observation.details,
+            },
+            review: review ?? undefined,
+          },
+          body.correlationId || body.snapshotRef
+            ? { correlationId: body.correlationId, snapshotRef: body.snapshotRef }
+            : undefined,
+        );
+      } else {
+        await reporter.report(
+          body.toolName as any,
+          payload,
+          body.correlationId || body.snapshotRef
+            ? { correlationId: body.correlationId, snapshotRef: body.snapshotRef }
+            : undefined,
+        );
+      }
     } else {
       let resultPayload: unknown = effectiveResult;
       try {
