@@ -58,6 +58,34 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
   return Math.max(min, Math.min(max, value));
 }
 
+function normalizeReviewConsistency(result: LLMObservationReviewResult): LLMObservationReviewResult {
+  switch (result.verdict) {
+    case 'allow':
+      return {
+        ...result,
+        riskScore: Math.min(result.riskScore, 20),
+        triggered: [],
+      };
+    case 'warn':
+      return {
+        ...result,
+        riskScore: Math.max(31, Math.min(result.riskScore || 45, 70)),
+      };
+    case 'ask':
+      return {
+        ...result,
+        riskScore: Math.max(71, Math.min(result.riskScore || 80, 90)),
+      };
+    case 'block':
+      return {
+        ...result,
+        riskScore: Math.max(91, result.riskScore || 95),
+      };
+    default:
+      return result;
+  }
+}
+
 function buildSystemPrompt(phase: 'request' | 'response'): string {
   const focus =
     phase === 'request'
@@ -122,7 +150,7 @@ function parseReview(
     };
   }
 
-  return {
+  return normalizeReviewConsistency({
     phase,
     verdict: normalizeVerdict(parsed.verdict),
     riskScore: clampNumber(parsed.riskScore, 0, 100, 0),
@@ -130,7 +158,7 @@ function parseReview(
     reason: typeof parsed.reason === 'string' ? parsed.reason.trim() : undefined,
     confidence: clampNumber(parsed.confidence, 0, 1, 0),
     source,
-  };
+  });
 }
 
 export class LLMSemanticObservationReviewer implements LLMObservationReviewer {

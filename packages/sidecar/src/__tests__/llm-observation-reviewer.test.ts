@@ -61,4 +61,38 @@ describe('LLM observation reviewer', () => {
       source: 'ollama:qwen2.5:0.5b',
     });
   });
+
+  it('normalizes contradictory allow verdicts into a low-risk benign result', async () => {
+    const reviewer = new LLMSemanticObservationReviewer({
+      review: vi.fn(async () =>
+        JSON.stringify({
+          verdict: 'allow',
+          riskScore: 100,
+          triggered: ['response', 'summary'],
+          reason: 'The response is benign and non-malicious.',
+          confidence: 1,
+        }),
+      ),
+      getProviderLabel: vi.fn(() => 'ollama:qwen3:0.6b'),
+    } as never);
+
+    const result = await reviewer.reviewResponse({
+      phase: 'response',
+      provider: 'openrouter',
+      model: 'qwen/test',
+      source: 'heuristic',
+      summary: 'A casual friendly answer.',
+      details: {},
+    });
+
+    expect(result).toEqual({
+      phase: 'response',
+      verdict: 'allow',
+      riskScore: 20,
+      triggered: [],
+      reason: 'The response is benign and non-malicious.',
+      confidence: 1,
+      source: 'ollama:qwen3:0.6b',
+    });
+  });
 });

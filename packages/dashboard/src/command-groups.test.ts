@@ -460,4 +460,79 @@ describe('buildCommandRuns', () => {
       meta: 'reviewer:local',
     });
   });
+
+  it('defers OpenClaw answer cards until after the final model response and review', () => {
+    const runs = buildCommandRuns([
+      event(1, 'user.command', { command: '整点好康的' }),
+      event(2, 'amp.user.command', {
+        command: '整点好康的',
+        runId: 'run-openclaw-ui-1',
+      }),
+      event(3, 'amp.trace', {
+        phase: 'openclaw.message_received',
+        runId: 'run-openclaw-ui-1',
+      }),
+      event(4, 'llm.request', {
+        provider: 'openrouter',
+        model: 'qwen/qwen3.5-flash-02-23',
+        messageCount: 2,
+        toolCount: 24,
+      }),
+      event(5, 'llm.response', {
+        provider: 'openrouter',
+        model: 'qwen/qwen3.5-flash-02-23',
+        tokensIn: 15000,
+        tokensOut: 120,
+        responsePreview: '先来点轻松的建议。',
+      }),
+      event(6, 'amp.agent.message', {
+        text: '先来点轻松的建议。',
+        runId: 'run-openclaw-ui-1',
+      }),
+      event(7, 'amp.trace', {
+        phase: 'openclaw.agent_end',
+        runId: 'run-openclaw-ui-1',
+      }),
+      event(8, 'amp.llm.response', {
+        provider: 'openrouter',
+        model: 'qwen/qwen3.5-flash-02-23',
+        tokensIn: 15000,
+        tokensOut: 120,
+        responseText: '先来点轻松的建议。',
+        responsePreview: '先来点轻松的建议。',
+      }),
+      event(9, 'amp.llm.review', {
+        phase: 'response',
+        sanitizer: {
+          source: 'ollama:qwen3:0.6b',
+          summary: 'Safe response summary.',
+          details: { tokensIn: 15000, tokensOut: 120 },
+        },
+        review: {
+          phase: 'response',
+          verdict: 'allow',
+          riskScore: 0,
+          triggered: [],
+          reason: 'Safe response.',
+          confidence: 1,
+          source: 'openai-compatible:gpt-4.1-mini',
+        },
+      }),
+    ]);
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.steps.map((step) => step.title)).toEqual([
+      'qwen/qwen3.5-flash-02-23',
+      'Answer',
+    ]);
+    expect(runs[0]?.steps[0]?.children[0]).toMatchObject({
+      kind: 'llm-review',
+      title: 'Response reviewed',
+      meta: 'openai-compatible:gpt-4.1-mini',
+    });
+    expect(runs[0]?.steps[1]).toMatchObject({
+      kind: 'agent-message',
+      body: '先来点轻松的建议。',
+    });
+  });
 });

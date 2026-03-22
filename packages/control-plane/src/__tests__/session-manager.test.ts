@@ -89,6 +89,17 @@ describe('SessionManager', () => {
   const originalBehaviorProvider = process.env.PADDOCK_BEHAVIOR_LLM_PROVIDER;
   const originalBehaviorModel = process.env.PADDOCK_BEHAVIOR_LLM_MODEL;
   const originalBehaviorBaseUrl = process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL;
+  const originalSanitizerEnabled = process.env.PADDOCK_LLM_SANITIZER_ENABLED;
+  const originalSanitizerProvider = process.env.PADDOCK_LLM_SANITIZER_PROVIDER;
+  const originalSanitizerModel = process.env.PADDOCK_LLM_SANITIZER_MODEL;
+  const originalSanitizerBaseUrl = process.env.PADDOCK_LLM_SANITIZER_BASE_URL;
+  const originalSanitizerTimeout = process.env.PADDOCK_LLM_SANITIZER_TIMEOUT_MS;
+  const originalAuditEnabled = process.env.PADDOCK_LLM_AUDIT_ENABLED;
+  const originalAuditProvider = process.env.PADDOCK_LLM_AUDIT_PROVIDER;
+  const originalAuditModel = process.env.PADDOCK_LLM_AUDIT_MODEL;
+  const originalAuditBaseUrl = process.env.PADDOCK_LLM_AUDIT_BASE_URL;
+  const originalAuditApiKey = process.env.PADDOCK_LLM_AUDIT_API_KEY;
+  const originalAuditTimeout = process.env.PADDOCK_LLM_AUDIT_TIMEOUT_MS;
   const originalOpenClawSrc = process.env.OPENCLAW_SRC;
   const tempDirs: string[] = [];
 
@@ -131,6 +142,28 @@ describe('SessionManager', () => {
     else process.env.PADDOCK_BEHAVIOR_LLM_MODEL = originalBehaviorModel;
     if (originalBehaviorBaseUrl === undefined) delete process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL;
     else process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL = originalBehaviorBaseUrl;
+    if (originalSanitizerEnabled === undefined) delete process.env.PADDOCK_LLM_SANITIZER_ENABLED;
+    else process.env.PADDOCK_LLM_SANITIZER_ENABLED = originalSanitizerEnabled;
+    if (originalSanitizerProvider === undefined) delete process.env.PADDOCK_LLM_SANITIZER_PROVIDER;
+    else process.env.PADDOCK_LLM_SANITIZER_PROVIDER = originalSanitizerProvider;
+    if (originalSanitizerModel === undefined) delete process.env.PADDOCK_LLM_SANITIZER_MODEL;
+    else process.env.PADDOCK_LLM_SANITIZER_MODEL = originalSanitizerModel;
+    if (originalSanitizerBaseUrl === undefined) delete process.env.PADDOCK_LLM_SANITIZER_BASE_URL;
+    else process.env.PADDOCK_LLM_SANITIZER_BASE_URL = originalSanitizerBaseUrl;
+    if (originalSanitizerTimeout === undefined) delete process.env.PADDOCK_LLM_SANITIZER_TIMEOUT_MS;
+    else process.env.PADDOCK_LLM_SANITIZER_TIMEOUT_MS = originalSanitizerTimeout;
+    if (originalAuditEnabled === undefined) delete process.env.PADDOCK_LLM_AUDIT_ENABLED;
+    else process.env.PADDOCK_LLM_AUDIT_ENABLED = originalAuditEnabled;
+    if (originalAuditProvider === undefined) delete process.env.PADDOCK_LLM_AUDIT_PROVIDER;
+    else process.env.PADDOCK_LLM_AUDIT_PROVIDER = originalAuditProvider;
+    if (originalAuditModel === undefined) delete process.env.PADDOCK_LLM_AUDIT_MODEL;
+    else process.env.PADDOCK_LLM_AUDIT_MODEL = originalAuditModel;
+    if (originalAuditBaseUrl === undefined) delete process.env.PADDOCK_LLM_AUDIT_BASE_URL;
+    else process.env.PADDOCK_LLM_AUDIT_BASE_URL = originalAuditBaseUrl;
+    if (originalAuditApiKey === undefined) delete process.env.PADDOCK_LLM_AUDIT_API_KEY;
+    else process.env.PADDOCK_LLM_AUDIT_API_KEY = originalAuditApiKey;
+    if (originalAuditTimeout === undefined) delete process.env.PADDOCK_LLM_AUDIT_TIMEOUT_MS;
+    else process.env.PADDOCK_LLM_AUDIT_TIMEOUT_MS = originalAuditTimeout;
     if (originalOpenClawSrc === undefined) delete process.env.OPENCLAW_SRC;
     else process.env.OPENCLAW_SRC = originalOpenClawSrc;
     while (tempDirs.length > 0) {
@@ -297,6 +330,55 @@ describe('SessionManager', () => {
             event.type === 'amp.session.start' &&
             (event.payload as any).phase === 'sidecar.behavior_review' &&
             String((event.payload as any).message).includes('qwen3:0.6b'),
+        ),
+      ).toBe(true);
+    });
+
+    it('should pass dedicated sanitizer and audit env into the Sidecar', async () => {
+      process.env.PADDOCK_LLM_SANITIZER_ENABLED = '1';
+      process.env.PADDOCK_LLM_SANITIZER_PROVIDER = 'ollama';
+      process.env.PADDOCK_LLM_SANITIZER_MODEL = 'qwen3:0.6b';
+      process.env.PADDOCK_LLM_SANITIZER_BASE_URL = 'http://127.0.0.1:11434';
+      process.env.PADDOCK_LLM_SANITIZER_TIMEOUT_MS = '30000';
+      process.env.PADDOCK_LLM_AUDIT_ENABLED = '1';
+      process.env.PADDOCK_LLM_AUDIT_PROVIDER = 'openai-compatible';
+      process.env.PADDOCK_LLM_AUDIT_MODEL = 'gpt-4.1-mini';
+      process.env.PADDOCK_LLM_AUDIT_BASE_URL = 'https://review.example/v1';
+      process.env.PADDOCK_LLM_AUDIT_API_KEY = 'audit-key';
+      process.env.PADDOCK_LLM_AUDIT_TIMEOUT_MS = '8000';
+
+      const session = await manager.create('openclaw');
+      await manager.start(session.id);
+
+      const sidecarStartCall = driver.calls.find(
+        (call) => call.method === 'exec' && String(call.args[1]).includes('nohup node index.js'),
+      );
+      expect(sidecarStartCall).toBeTruthy();
+      expect(String(sidecarStartCall?.args[1])).toContain('PADDOCK_LLM_SANITIZER_ENABLED=1');
+      expect(String(sidecarStartCall?.args[1])).toContain(`PADDOCK_LLM_SANITIZER_PROVIDER='ollama'`);
+      expect(String(sidecarStartCall?.args[1])).toContain(`PADDOCK_LLM_SANITIZER_MODEL='qwen3:0.6b'`);
+      expect(String(sidecarStartCall?.args[1])).toContain(`PADDOCK_LLM_SANITIZER_BASE_URL='http://host.internal:3100/api/behavior-llm/ollama'`);
+      expect(String(sidecarStartCall?.args[1])).toContain('PADDOCK_LLM_AUDIT_ENABLED=1');
+      expect(String(sidecarStartCall?.args[1])).toContain(`PADDOCK_LLM_AUDIT_PROVIDER='openai-compatible'`);
+      expect(String(sidecarStartCall?.args[1])).toContain(`PADDOCK_LLM_AUDIT_MODEL='gpt-4.1-mini'`);
+      expect(String(sidecarStartCall?.args[1])).toContain(`PADDOCK_LLM_AUDIT_BASE_URL='https://review.example/v1'`);
+      expect(String(sidecarStartCall?.args[1])).toContain(`PADDOCK_LLM_AUDIT_API_KEY='audit-key'`);
+
+      const events = eventStore.getEvents(session.id);
+      expect(
+        events.some(
+          (event) =>
+            event.type === 'amp.session.start' &&
+            (event.payload as any).phase === 'sidecar.llm_sanitizer' &&
+            String((event.payload as any).message).includes('qwen3:0.6b'),
+        ),
+      ).toBe(true);
+      expect(
+        events.some(
+          (event) =>
+            event.type === 'amp.session.start' &&
+            (event.payload as any).phase === 'sidecar.llm_audit' &&
+            String((event.payload as any).message).includes('gpt-4.1-mini'),
         ),
       ).toBe(true);
     });

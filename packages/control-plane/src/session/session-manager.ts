@@ -393,10 +393,10 @@ export class SessionManager {
       const controlUrl = await this.resolveControlPlaneUrlForVm(driver, vmId);
       const controlUrlCandidates = JSON.stringify(this.getControlPlaneUrlCandidates());
       const behaviorEnv = this.getSidecarBehaviorEnv(controlUrl);
-      if (behaviorEnv.summary) {
+      for (const summary of behaviorEnv.summaries) {
         this.eventStore.append(sessionId, 'amp.session.start', {
-          phase: 'sidecar.behavior_review',
-          message: behaviorEnv.summary,
+          phase: summary.phase,
+          message: summary.message,
         });
       }
       const sidecarEnv = [
@@ -1430,38 +1430,79 @@ export class SessionManager {
     return Array.from(candidates);
   }
 
-  private getSidecarBehaviorEnv(controlUrl: string): { entries: string[]; summary?: string } {
-    if (!isTruthyEnv(process.env.PADDOCK_BEHAVIOR_LLM_ENABLED)) {
+  private getSidecarBehaviorEnv(controlUrl: string): { entries: string[]; summaries: Array<{ phase: string; message: string }> } {
+    const configs = [
+      this.getSidecarLLMModuleEnv('PADDOCK_BEHAVIOR_LLM', controlUrl, {
+        summaryPhase: 'sidecar.behavior_review',
+        summaryLabel: 'Behavior review LLM',
+        passthroughEnvVars: [
+          'PADDOCK_BEHAVIOR_LLM_API_KEY',
+          'PADDOCK_BEHAVIOR_LLM_TIMEOUT_MS',
+          'PADDOCK_BEHAVIOR_LLM_TEMPERATURE',
+          'PADDOCK_BEHAVIOR_LLM_MAX_TOKENS',
+          'PADDOCK_BEHAVIOR_LLM_MAX_WINDOW',
+          'PADDOCK_BEHAVIOR_LLM_MAX_RISK_BOOST',
+        ],
+      }),
+      this.getSidecarLLMModuleEnv('PADDOCK_LLM_SANITIZER', controlUrl, {
+        summaryPhase: 'sidecar.llm_sanitizer',
+        summaryLabel: 'LLM observation sanitizer',
+        passthroughEnvVars: [
+          'PADDOCK_LLM_SANITIZER_API_KEY',
+          'PADDOCK_LLM_SANITIZER_TIMEOUT_MS',
+          'PADDOCK_LLM_SANITIZER_TEMPERATURE',
+          'PADDOCK_LLM_SANITIZER_MAX_TOKENS',
+        ],
+      }),
+      this.getSidecarLLMModuleEnv('PADDOCK_LLM_AUDIT', controlUrl, {
+        summaryPhase: 'sidecar.llm_audit',
+        summaryLabel: 'LLM observation reviewer',
+        passthroughEnvVars: [
+          'PADDOCK_LLM_AUDIT_API_KEY',
+          'PADDOCK_LLM_AUDIT_TIMEOUT_MS',
+          'PADDOCK_LLM_AUDIT_TEMPERATURE',
+          'PADDOCK_LLM_AUDIT_MAX_TOKENS',
+        ],
+      }),
+    ];
+
+    return {
+      entries: configs.flatMap((config) => config.entries),
+      summaries: configs.flatMap((config) => (config.summary ? [config.summary] : [])),
+    };
+  }
+
+  private getSidecarLLMModuleEnv(
+    prefix: 'PADDOCK_BEHAVIOR_LLM' | 'PADDOCK_LLM_SANITIZER' | 'PADDOCK_LLM_AUDIT',
+    controlUrl: string,
+    options: {
+      summaryPhase: string;
+      summaryLabel: string;
+      passthroughEnvVars: string[];
+    },
+  ): { entries: string[]; summary?: { phase: string; message: string } } {
+    if (!isTruthyEnv(process.env[`${prefix}_ENABLED`])) {
       return { entries: [] };
     }
 
-    const entries = ['PADDOCK_BEHAVIOR_LLM_ENABLED=1'];
-    const provider = process.env.PADDOCK_BEHAVIOR_LLM_PROVIDER?.trim().toLowerCase() ?? 'ollama';
-    entries.push(`PADDOCK_BEHAVIOR_LLM_PROVIDER=${shellEscape(provider)}`);
+    const entries = [`${prefix}_ENABLED=1`];
+    const provider = process.env[`${prefix}_PROVIDER`]?.trim().toLowerCase() ?? 'ollama';
+    entries.push(`${prefix}_PROVIDER=${shellEscape(provider)}`);
 
-    const model = process.env.PADDOCK_BEHAVIOR_LLM_MODEL?.trim();
+    const model = process.env[`${prefix}_MODEL`]?.trim();
     if (model) {
-      entries.push(`PADDOCK_BEHAVIOR_LLM_MODEL=${shellEscape(model)}`);
+      entries.push(`${prefix}_MODEL=${shellEscape(model)}`);
     }
 
-    let baseUrl = process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL?.trim();
+    let baseUrl = process.env[`${prefix}_BASE_URL`]?.trim();
     if (provider === 'ollama') {
       baseUrl = `${controlUrl.replace(/\/+$/, '')}/api/behavior-llm/ollama`;
     }
     if (baseUrl) {
-      entries.push(`PADDOCK_BEHAVIOR_LLM_BASE_URL=${shellEscape(baseUrl)}`);
+      entries.push(`${prefix}_BASE_URL=${shellEscape(baseUrl)}`);
     }
 
-    const passthroughEnvVars = [
-      'PADDOCK_BEHAVIOR_LLM_API_KEY',
-      'PADDOCK_BEHAVIOR_LLM_TIMEOUT_MS',
-      'PADDOCK_BEHAVIOR_LLM_TEMPERATURE',
-      'PADDOCK_BEHAVIOR_LLM_MAX_TOKENS',
-      'PADDOCK_BEHAVIOR_LLM_MAX_WINDOW',
-      'PADDOCK_BEHAVIOR_LLM_MAX_RISK_BOOST',
-    ] as const;
-
-    for (const envName of passthroughEnvVars) {
+    for (const envName of options.passthroughEnvVars) {
       const value = process.env[envName]?.trim();
       if (value) {
         entries.push(`${envName}=${shellEscape(value)}`);
@@ -1470,7 +1511,10 @@ export class SessionManager {
 
     return {
       entries,
-      summary: `Behavior review LLM enabled (${provider}${model ? ` / ${model}` : ''}) via ${baseUrl ?? '(default)'}`,
+      summary: {
+        phase: options.summaryPhase,
+        message: `${options.summaryLabel} enabled (${provider}${model ? ` / ${model}` : ''}) via ${baseUrl ?? '(default)'}`,
+      },
     };
   }
 

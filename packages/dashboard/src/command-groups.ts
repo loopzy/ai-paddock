@@ -824,6 +824,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
     const steps: CommandStep[] = [];
     let currentLLMStep: CommandStep | null = null;
     let currentToolStep: CommandStep | null = null;
+    let deferredAgentMessageStep: CommandStep | null = null;
 
     for (const event of displayEvents) {
       const payload = event.payload;
@@ -1025,8 +1026,12 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
             'Answer details',
             'completed',
           );
-          steps.push(step);
-          currentLLMStep = null;
+          if (hasOpenClawLifecycle) {
+            deferredAgentMessageStep = step;
+          } else {
+            steps.push(step);
+            currentLLMStep = null;
+          }
           currentToolStep = null;
           break;
         }
@@ -1080,6 +1085,12 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
         default:
           break;
       }
+    }
+
+    if (deferredAgentMessageStep && status === 'completed') {
+      steps.push(deferredAgentMessageStep);
+      currentLLMStep = null;
+      currentToolStep = null;
     }
 
     const finishedAt = status === 'running' ? undefined : blockEvents[blockEvents.length - 1]?.timestamp;
