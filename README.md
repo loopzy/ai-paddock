@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">openPaddock</h1>
+  <h1 align="center">AI Paddock</h1>
   <p align="center">
     <strong>A secure sandbox & monitoring protocol for agents</strong>
   </p>
@@ -217,8 +217,8 @@ Agent → Sidecar → Control Plane → Event Store → Dashboard
 ### Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/loopzy/openPaddock.git
-cd openPaddock
+git clone https://github.com/loopzy/ai-paddock
+cd ai-paddock
 ```
 
 ### Step 2: Install JavaScript / TypeScript Dependencies
@@ -434,7 +434,7 @@ export PADDOCK_BEHAVIOR_LLM_API_KEY=your-key
 - 🔜 Plugin marketplace for custom security rules
 - 🔜 macOS sandbox support
 
-`openPaddock` is currently in early active development. We are releasing this early to validate the AMP (Agent Management Protocol) architecture and gather community feedback. PRs are highly welcome!
+`ai-paddock` is currently in early active development. We are releasing this early to validate the AMP (Agent Management Protocol) architecture and gather community feedback. PRs are highly welcome!
 
 ## License
 

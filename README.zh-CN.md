@@ -199,8 +199,8 @@ AMP 不是 Agent 框架，也不是模型协议。它规定了：
 ### 第 1 步：克隆仓库
 
 ```bash
-git clone https://github.com/loopzy/openPaddock.git
-cd openPaddock
+git clone https://github.com/loopzy/ai-paddock
+cd ai-paddock
 ```
 
 ### 第 2 步：安装 JavaScript / TypeScript 依赖
@@ -416,7 +416,7 @@ export PADDOCK_BEHAVIOR_LLM_API_KEY=your-key
 - 🔜 自定义安全规则插件市场
 - 🔜 macOS沙盒支持
 
-`openPaddock` 目前正处于早期开发阶段，提前发布旨在验证 这套智能体管理协议的核心架构，并收集社区意见。非常欢迎提交 PR！
+`ai-paddock` 目前正处于早期开发阶段，提前发布旨在验证 这套智能体管理协议的核心架构，并收集社区意见。非常欢迎提交 PR！
 
 ## 许可证
 
