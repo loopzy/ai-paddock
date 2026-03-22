@@ -417,9 +417,47 @@ export default {
     const log = createLogger(api, config.logFile);
     const correlationByToolCall = new Map();
     const reportedAgentMessages = new Set();
+    const activeRunBySessionKey = new Map();
+
+    function normalizeNonEmptyString(value) {
+      return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+    }
+
+    function rememberRunId(event, ctx) {
+      const runId = normalizeNonEmptyString(ctx?.runId) ?? normalizeNonEmptyString(event?.runId);
+      const sessionKey =
+        normalizeNonEmptyString(ctx?.sessionKey) ?? normalizeNonEmptyString(event?.sessionKey);
+      if (runId && sessionKey) {
+        activeRunBySessionKey.set(sessionKey, runId);
+      }
+      return runId;
+    }
+
+    function resolveRunId(event, ctx) {
+      const directRunId = normalizeNonEmptyString(ctx?.runId) ?? normalizeNonEmptyString(event?.runId);
+      if (directRunId) {
+        return directRunId;
+      }
+      const sessionKey =
+        normalizeNonEmptyString(ctx?.sessionKey) ?? normalizeNonEmptyString(event?.sessionKey);
+      if (!sessionKey) {
+        return undefined;
+      }
+      return activeRunBySessionKey.get(sessionKey);
+    }
+
+    function extractMessageRole(event) {
+      const role = normalizeNonEmptyString(event?.message?.role) ?? normalizeNonEmptyString(event?.role);
+      return role?.toLowerCase();
+    }
 
     async function reportAgentMessageOnce(event, ctx) {
-      if (!ctx?.runId) {
+      const resolvedRunId = resolveRunId(event, ctx);
+      if (!resolvedRunId) {
+        return;
+      }
+      const messageRole = extractMessageRole(event);
+      if (messageRole && messageRole !== 'assistant') {
         return;
       }
       const messageText = extractMessageText(event?.message) || extractMessageText(event?.content);
@@ -436,7 +474,7 @@ export default {
       await reportAmpEvent(config, log, 'amp.agent.message', {
         text: truncateString(messageText, 4000),
         success: event?.success !== false,
-        runId: ctx?.runId,
+        runId: resolvedRunId,
         agentId: ctx?.agentId,
         sessionKey: ctx?.sessionKey,
       });
@@ -449,6 +487,7 @@ export default {
     });
 
     api.on('before_model_resolve', async (event, ctx) => {
+      rememberRunId(event, ctx);
       const provider = typeof event?.provider === 'string' ? event.provider.trim() : '';
       const model = typeof event?.model === 'string' ? event.model.trim() : '';
 
@@ -637,6 +676,10 @@ export default {
     api.on('session_end', async (event, ctx) => {
       const payload = buildLifecyclePayload('openclaw.session_end', event, ctx);
       log('session_end', payload);
+      const sessionKey = normalizeNonEmptyString(ctx?.sessionKey) ?? normalizeNonEmptyString(event?.sessionKey);
+      if (sessionKey) {
+        activeRunBySessionKey.delete(sessionKey);
+      }
       await reportAmpEvent(config, log, 'amp.session.end', payload);
     });
 
@@ -725,6 +768,7 @@ export default {
     });
 
     api.on('llm_input', async (event, ctx) => {
+      rememberRunId(event, ctx);
       const payload = buildNativeLlmRequestPayload(event, ctx);
       log('llm_input', {
         runId: payload.runId,
@@ -736,6 +780,7 @@ export default {
     });
 
     api.on('llm_output', async (event, ctx) => {
+      rememberRunId(event, ctx);
       const payload = buildNativeLlmResponsePayload(event, ctx);
       log('llm_output', {
         runId: payload.runId,

@@ -78,6 +78,22 @@ function getRunId(event: CommandEventLike): string | undefined {
   return getString((event.payload as { runId?: unknown }).runId);
 }
 
+function getTracePhase(event: CommandEventLike): string | undefined {
+  if (event.type !== 'amp.trace') return undefined;
+  return getString((event.payload as { phase?: unknown }).phase);
+}
+
+function hasOpenClawLifecycleEvent(events: CommandEventLike[]): boolean {
+  return events.some((event) => {
+    const phase = getTracePhase(event);
+    return Boolean(phase && phase.startsWith('openclaw.'));
+  });
+}
+
+function hasOpenClawTerminalEvent(events: CommandEventLike[]): boolean {
+  return events.some((event) => getTracePhase(event) === 'openclaw.agent_end');
+}
+
 function safeJson(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   try {
@@ -783,6 +799,8 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
         .find((event) => event.type === 'amp.command.status')
         ?.payload.status,
     );
+    const hasOpenClawLifecycle = hasOpenClawLifecycleEvent(blockEvents);
+    const hasOpenClawTerminal = hasOpenClawTerminalEvent(blockEvents);
     const aborted = lastCommandStatus === 'aborted';
     const failed =
       ['failed', 'error'].includes(lastCommandStatus ?? '') ||
@@ -793,7 +811,7 @@ export function buildCommandRuns(events: CommandEventLike[]): CommandRun[] {
       );
     const completed =
       ['completed', 'complete', 'finished', 'done', 'succeeded'].includes(lastCommandStatus ?? '') ||
-      Boolean(responseText);
+      (hasOpenClawLifecycle ? hasOpenClawTerminal : Boolean(responseText));
 
     const status: CommandRunStatus = aborted
       ? 'aborted'

@@ -300,18 +300,29 @@ describe('paddock-amp-plugin', () => {
     ]);
   });
 
-  it('captures the final assistant reply from agent_end when message hooks have no runId', async () => {
+  it('captures the final assistant reply from before_message_write by reusing the active run id for the session', async () => {
     const plugin = await loadPlugin();
     const api = createApi();
     plugin.register(api);
 
     const beforeMessageWrite = handlers.get('before_message_write');
-    const messageSent = handlers.get('message_sent');
-    const agentEnd = handlers.get('agent_end');
+    const llmInput = handlers.get('llm_input');
 
     expect(beforeMessageWrite).toBeTypeOf('function');
-    expect(messageSent).toBeTypeOf('function');
-    expect(agentEnd).toBeTypeOf('function');
+    expect(llmInput).toBeTypeOf('function');
+
+    await llmInput?.(
+      {
+        runId: 'run-weather-final',
+        sessionId: 'oc-session-1',
+        provider: 'openrouter',
+        model: 'qwen/qwen3.5-flash-02-23',
+        prompt: '今天天气怎么样',
+        historyMessages: [],
+        imagesCount: 0,
+      },
+      { sessionKey: 'paddock:test', agentId: 'main' },
+    );
 
     beforeMessageWrite?.(
       {
@@ -322,10 +333,137 @@ describe('paddock-amp-plugin', () => {
       { sessionKey: 'paddock:test', agentId: 'main' },
     );
 
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const ampEventCalls = fetchMock.mock.calls
+      .filter(([url]) => String(url).includes('/amp/event'))
+      .map(([, init]) => JSON.parse(String((init as RequestInit | undefined)?.body ?? '{}')) as {
+        toolName: string;
+        result: string;
+      });
+
+    const agentMessages = ampEventCalls
+      .filter((entry) => entry.toolName === 'amp.agent.message')
+      .map((entry) => JSON.parse(entry.result) as Record<string, unknown>);
+
+    expect(agentMessages).toEqual([
+      expect.objectContaining({
+        text: '北京今天晴，最高 12 度。',
+        runId: 'run-weather-final',
+        agentId: 'main',
+        sessionKey: 'paddock:test',
+      }),
+    ]);
+  });
+
+  it('ignores non-assistant before_message_write events when reporting final replies', async () => {
+    const plugin = await loadPlugin();
+    const api = createApi();
+    plugin.register(api);
+
+    const llmInput = handlers.get('llm_input');
+    const beforeMessageWrite = handlers.get('before_message_write');
+    const agentEnd = handlers.get('agent_end');
+
+    expect(llmInput).toBeTypeOf('function');
+    expect(beforeMessageWrite).toBeTypeOf('function');
+    expect(agentEnd).toBeTypeOf('function');
+
+    await llmInput?.(
+      {
+        runId: 'run-no-user-echo',
+        sessionId: 'oc-session-1',
+        provider: 'openrouter',
+        model: 'qwen/qwen3.5-flash-02-23',
+        prompt: '整点好康的',
+        historyMessages: [],
+        imagesCount: 0,
+      },
+      { sessionKey: 'paddock:test', agentId: 'main' },
+    );
+
+    beforeMessageWrite?.(
+      {
+        message: { role: 'user', content: [{ type: 'text', text: '整点好康的' }] },
+        sessionKey: 'paddock:test',
+        agentId: 'main',
+      },
+      { sessionKey: 'paddock:test', agentId: 'main' },
+    );
+
+    await agentEnd?.(
+      {
+        success: true,
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: '整点好康的' }] },
+          { role: 'assistant', content: [{ type: 'text', text: '给你整点开心的：今天阳光不错，去外面转转。' }] },
+        ],
+      },
+      { sessionKey: 'paddock:test', agentId: 'main' },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const agentMessages = fetchMock.mock.calls
+      .filter(([url]) => String(url).includes('/amp/event'))
+      .map(([, init]) => JSON.parse(String((init as RequestInit | undefined)?.body ?? '{}')) as {
+        toolName: string;
+        result: string;
+      })
+      .filter((entry) => entry.toolName === 'amp.agent.message')
+      .map((entry) => JSON.parse(entry.result) as Record<string, unknown>);
+
+    expect(agentMessages).toEqual([
+      expect.objectContaining({
+        text: '给你整点开心的：今天阳光不错，去外面转转。',
+        runId: 'run-no-user-echo',
+        agentId: 'main',
+        sessionKey: 'paddock:test',
+      }),
+    ]);
+  });
+
+  it('captures the final assistant reply from agent_end when message hooks have no runId', async () => {
+    const plugin = await loadPlugin();
+    const api = createApi();
+    plugin.register(api);
+
+    const llmInput = handlers.get('llm_input');
+    const beforeMessageWrite = handlers.get('before_message_write');
+    const messageSent = handlers.get('message_sent');
+    const agentEnd = handlers.get('agent_end');
+
+    expect(llmInput).toBeTypeOf('function');
+    expect(beforeMessageWrite).toBeTypeOf('function');
+    expect(messageSent).toBeTypeOf('function');
+    expect(agentEnd).toBeTypeOf('function');
+
+    await llmInput?.(
+      {
+        runId: 'run-weather-final',
+        sessionId: 'oc-session-1',
+        provider: 'openrouter',
+        model: 'qwen/qwen3.5-flash-02-23',
+        prompt: '今天天气怎么样',
+        historyMessages: [],
+        imagesCount: 0,
+      },
+      { sessionKey: 'paddock:test', agentId: 'main' },
+    );
+
+    beforeMessageWrite?.(
+      {
+        message: { role: 'assistant', content: [{ type: 'thinking', thinking: '先整理一下答案' }] },
+        sessionKey: 'paddock:test',
+        agentId: 'main',
+      },
+      { sessionKey: 'paddock:test', agentId: 'main' },
+    );
+
     await messageSent?.(
       {
         success: true,
-        message: { role: 'assistant', content: [{ type: 'text', text: '北京今天晴，最高 12 度。' }] },
+        message: { role: 'assistant', content: [{ type: 'thinking', thinking: '先整理一下答案' }] },
       },
       { sessionKey: 'paddock:test', agentId: 'main' },
     );
@@ -338,7 +476,7 @@ describe('paddock-amp-plugin', () => {
           { role: 'assistant', content: [{ type: 'text', text: '北京今天晴，最高 12 度。' }] },
         ],
       },
-      { sessionKey: 'paddock:test', agentId: 'main', runId: 'run-weather-final' },
+      { sessionKey: 'paddock:test', agentId: 'main' },
     );
 
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -369,7 +507,7 @@ describe('paddock-amp-plugin', () => {
       expect.arrayContaining([
         expect.objectContaining({
           phase: 'openclaw.agent_end',
-          runId: 'run-weather-final',
+          sessionKey: 'paddock:test',
           success: true,
         }),
       ]),

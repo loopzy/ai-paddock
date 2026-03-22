@@ -196,6 +196,96 @@ describe('buildCommandRuns', () => {
     });
   });
 
+  it('keeps an OpenClaw run running when an interim agent message is followed by more work', () => {
+    const runningRuns = buildCommandRuns([
+      event(1, 'user.command', { command: '整点新闻呢' }),
+      event(2, 'amp.user.command', {
+        command: '整点新闻呢',
+        runId: 'run-openclaw-1',
+      }),
+      event(3, 'amp.trace', {
+        phase: 'openclaw.message_received',
+        runId: 'run-openclaw-1',
+      }),
+      event(4, 'amp.llm.request', {
+        provider: 'openrouter',
+        model: 'qwen/qwen3.5-flash-02-23',
+        messageCount: 2,
+      }),
+      event(5, 'amp.llm.response', {
+        provider: 'openrouter',
+        model: 'qwen/qwen3.5-flash-02-23',
+        tokensIn: 1200,
+        tokensOut: 80,
+        responsePreview: '[tool] web_search',
+      }),
+      event(6, 'amp.agent.message', {
+        text: '网页工具有点卡，我换个方式继续找。',
+        runId: 'run-openclaw-1',
+      }),
+      event(7, 'amp.tool.intent', {
+        toolName: 'web_search',
+        toolInput: { query: 'interesting science discoveries 2025 2026 latest breakthroughs' },
+        runId: 'run-openclaw-1',
+      }),
+    ]);
+
+    expect(runningRuns).toHaveLength(1);
+    expect(runningRuns[0]).toMatchObject({
+      status: 'running',
+      active: true,
+      responseText: '网页工具有点卡，我换个方式继续找。',
+    });
+
+    const completedRuns = buildCommandRuns([
+      event(1, 'user.command', { command: '整点新闻呢' }),
+      event(2, 'amp.user.command', {
+        command: '整点新闻呢',
+        runId: 'run-openclaw-1',
+      }),
+      event(3, 'amp.trace', {
+        phase: 'openclaw.message_received',
+        runId: 'run-openclaw-1',
+      }),
+      event(4, 'amp.llm.request', {
+        provider: 'openrouter',
+        model: 'qwen/qwen3.5-flash-02-23',
+        messageCount: 2,
+      }),
+      event(5, 'amp.llm.response', {
+        provider: 'openrouter',
+        model: 'qwen/qwen3.5-flash-02-23',
+        tokensIn: 1200,
+        tokensOut: 80,
+        responsePreview: '[tool] web_search',
+      }),
+      event(6, 'amp.agent.message', {
+        text: '网页工具有点卡，我换个方式继续找。',
+        runId: 'run-openclaw-1',
+      }),
+      event(7, 'amp.tool.intent', {
+        toolName: 'web_search',
+        toolInput: { query: 'interesting science discoveries 2025 2026 latest breakthroughs' },
+        runId: 'run-openclaw-1',
+      }),
+      event(8, 'amp.agent.message', {
+        text: '我先给你来点靠谱的科技新鲜事。',
+        runId: 'run-openclaw-1',
+      }),
+      event(9, 'amp.trace', {
+        phase: 'openclaw.agent_end',
+        runId: 'run-openclaw-1',
+      }),
+    ]);
+
+    expect(completedRuns).toHaveLength(1);
+    expect(completedRuns[0]).toMatchObject({
+      status: 'completed',
+      active: false,
+      responseText: '我先给你来点靠谱的科技新鲜事。',
+    });
+  });
+
   it('deduplicates proxy llm steps when native amp.llm events describe the same model turn', () => {
     const runs = buildCommandRuns([
       event(1, 'user.command', { command: '总结一下今天的重点新闻' }),

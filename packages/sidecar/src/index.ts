@@ -149,6 +149,91 @@ function mergeVaultSummary(
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+type ObservationMaskResult = {
+  value: unknown;
+  secretsFound: number;
+  categories: string[];
+};
+
+function maskObservationValue(value: unknown, vault: SensitiveDataVault): ObservationMaskResult {
+  if (typeof value === 'string') {
+    const masked = vault.mask(value);
+    return {
+      value: masked.masked,
+      secretsFound: masked.secretsFound,
+      categories: masked.categories,
+    };
+  }
+
+  if (Array.isArray(value)) {
+    let secretsFound = 0;
+    const categories = new Set<string>();
+    const items = value.map((item) => {
+      const masked = maskObservationValue(item, vault);
+      secretsFound += masked.secretsFound;
+      for (const category of masked.categories) categories.add(category);
+      return masked.value;
+    });
+    return {
+      value: items,
+      secretsFound,
+      categories: Array.from(categories),
+    };
+  }
+
+  if (isRecord(value)) {
+    let secretsFound = 0;
+    const categories = new Set<string>();
+    const entries = Object.entries(value).map(([key, entryValue]) => {
+      const masked = maskObservationValue(entryValue, vault);
+      secretsFound += masked.secretsFound;
+      for (const category of masked.categories) categories.add(category);
+      return [key, masked.value] as const;
+    });
+    return {
+      value: Object.fromEntries(entries),
+      secretsFound,
+      categories: Array.from(categories),
+    };
+  }
+
+  return {
+    value,
+    secretsFound: 0,
+    categories: [],
+  };
+}
+
+function prepareObservationalPayload(
+  rawResult: string,
+  vault: SensitiveDataVault,
+): { payload: Record<string, unknown>; maskedRaw?: ReturnType<SensitiveDataVault['mask']> } {
+  try {
+    const parsed = JSON.parse(rawResult) as unknown;
+    if (isRecord(parsed)) {
+      const masked = maskObservationValue(parsed, vault);
+      let payload = masked.value as Record<string, unknown>;
+      if (masked.secretsFound > 0) {
+        payload = mergeVaultSummary(payload, masked.secretsFound, masked.categories);
+      }
+      return { payload };
+    }
+  } catch {
+    // Fall back to raw-string masking below.
+  }
+
+  const maskedRaw = vault.mask(rawResult);
+  const payload =
+    maskedRaw.secretsFound > 0
+      ? mergeVaultSummary({ result: maskedRaw.masked }, maskedRaw.secretsFound, maskedRaw.categories)
+      : { result: maskedRaw.masked };
+  return { payload, maskedRaw };
+}
+
 export function createAmpGateRequestHandler(deps: AmpGateServerDeps) {
   const ampEventVault = deps.ampEventVault ?? new SensitiveDataVault();
   return async (req: IncomingMessage, res: ServerResponse) => {
@@ -294,21 +379,23 @@ async function handleEventReport(
       snapshotRef?: string;
     };
     const shouldSanitizeObservationalEvent = OBSERVATIONAL_AMP_EVENTS.has(body.toolName);
-    const sanitizedResult = shouldSanitizeObservationalEvent ? ampEventVault.mask(body.result) : undefined;
+    const observationalPayload = shouldSanitizeObservationalEvent
+      ? prepareObservationalPayload(body.result, ampEventVault)
+      : undefined;
+    const sanitizedResult = observationalPayload?.maskedRaw;
     const effectiveResult = sanitizedResult?.masked ?? body.result;
 
     if (!shouldSanitizeObservationalEvent) {
       gate.onToolResult(body.toolName, effectiveResult, { path: body.path });
     }
     if (body.toolName.startsWith('amp.')) {
-      let payload: Record<string, unknown> = { result: effectiveResult };
-      try {
-        payload = JSON.parse(effectiveResult);
-      } catch {
-        // leave raw string payload
-      }
-      if (sanitizedResult && sanitizedResult.secretsFound > 0) {
-        payload = mergeVaultSummary(payload, sanitizedResult.secretsFound, sanitizedResult.categories);
+      let payload: Record<string, unknown> = observationalPayload?.payload ?? { result: effectiveResult };
+      if (!observationalPayload) {
+        try {
+          payload = JSON.parse(effectiveResult);
+        } catch {
+          // leave raw string payload
+        }
       }
       if (body.toolName === 'amp.llm.request' || body.toolName === 'amp.llm.response') {
         const sanitizer = llmObservationSanitizer ?? FALLBACK_LLM_OBSERVATION_SANITIZER;

@@ -737,6 +737,8 @@ describe('Sidecar boundary routes', () => {
         result: JSON.stringify({
           provider: 'openrouter',
           model: 'qwen/qwen3.5-flash-02-23',
+          tokensIn: 15469,
+          tokensOut: 253,
           responseText: 'token is sk-ant-abcdefghijklmnopqrstuvwxyz, contact user@example.com',
           responsePreview: 'token is sk-ant-abcdefghijklmnopqrstuvwxyz, contact user@example.com',
           response: {
@@ -752,10 +754,18 @@ describe('Sidecar boundary routes', () => {
       expect.objectContaining({
         type: 'amp.llm.response',
         payload: expect.objectContaining({
+          provider: 'openrouter',
+          model: 'qwen/qwen3.5-flash-02-23',
+          tokensIn: 15469,
+          tokensOut: 253,
           responseText: expect.stringContaining('{{PADDOCK_SECRET_'),
           responsePreview: expect.stringContaining('{{PADDOCK_SECRET_'),
           response: expect.objectContaining({
             assistantTexts: [expect.stringContaining('{{PADDOCK_SECRET_')],
+          }),
+          reviewSanitization: expect.objectContaining({
+            source: 'heuristic',
+            summary: expect.stringContaining('Model response from openrouter qwen/qwen3.5-flash-02-23 (15469/253 tokens)'),
           }),
           vault: expect.objectContaining({
             secretsMasked: expect.any(Number),

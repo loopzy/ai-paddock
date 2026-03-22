@@ -265,6 +265,68 @@ pnpm run prepare:sandbox-rootfs
 
 如果你使用的是较老的 Docker 版本，不支持 `host-gateway`，可以在执行准备步骤前，手动把代理地址直接写成 `http://host.docker.internal:7890`。
 
+### 受限网络环境：为当前 VM 手工配置网页工具代理
+
+如果 LLM 调用正常，但 `web_fetch`、`browser` 之类直接在沙盒内访问网页的工具经常 `fetch failed`、超时，通常说明：
+
+- 宿主机侧的 LLM Relay 已经能通过本地代理正常出网
+- 但 VM 自己的网页流量还没有显式走到宿主机代理
+
+这种情况下，可以先按下面的步骤为**当前 session**做一次手工验证和临时配置。
+
+#### 宿主机执行
+
+先照常导出你平时使用的代理环境变量：
+
+```bash
+export https_proxy=http://127.0.0.1:7890
+export http_proxy=http://127.0.0.1:7890
+export all_proxy=socks5://127.0.0.1:7890
+```
+
+然后确认两件事：
+
+1. 代理端口确实在宿主机上监听
+2. 找到一个 **VM 可以访问到的宿主机 IP**（通常是局域网地址，而不是 `127.0.0.1`）
+
+可参考：
+
+```bash
+lsof -nP -iTCP:7890 -sTCP:LISTEN
+ifconfig | rg "inet 192\\.168\\."
+```
+
+如果代理应用只监听 `127.0.0.1:7890`，那么 VM 无法直接连接它。此时需要先在代理应用中开启“允许局域网连接”或等效选项，让 VM 能通过宿主机 IP 访问该端口。
+
+#### VM 内执行
+
+在 Dashboard 的 terminal 中进入当前 VM，把下面的 `192.168.x.x` 替换成上一步查到的宿主机可达 IP：
+
+```bash
+export http_proxy=http://192.168.x.x:7890
+export https_proxy=http://192.168.x.x:7890
+export all_proxy=socks5://192.168.x.x:7890
+export NO_PROXY=127.0.0.1,localhost
+```
+
+先验证代理变量已生效：
+
+```bash
+env | grep -i proxy
+```
+
+再验证网页访问：
+
+```bash
+curl -I https://openrouter.ai
+curl -I https://news.google.com
+curl -I https://www.bbc.com/news
+```
+
+如果这些请求恢复正常，那么当前 VM 内的 `web_fetch` / `browser` 通常也会随之恢复。
+
+这组命令是**当前 VM 的临时设置**，适合快速验证和临时工作流。重建沙盒或新建 session 后需要重新执行；如果你希望把这套代理行为自动化，再考虑把它收进正式配置或启动流程。
+
 ### 第 6 步：准备 Node 运行时
 
 Node 运行时是必须的，因为 OpenClaw 会在 VM 内部运行。
