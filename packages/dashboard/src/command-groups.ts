@@ -482,15 +482,103 @@ function currentActivityFromEvents(blockEvents: CommandEventLike[]): string | un
   return lastInteresting ? summarizeStep(lastInteresting) ?? undefined : undefined;
 }
 
-function selectDisplayEvents(blockEvents: CommandEventLike[]): CommandEventLike[] {
-  const hasNativeLlmRequest = blockEvents.some((event) => event.type === 'amp.llm.request');
-  const hasNativeLlmResponse = blockEvents.some((event) => event.type === 'amp.llm.response');
+const NATIVE_LLM_DEDUPE_WINDOW = 4;
 
-  return blockEvents.filter((event) => {
-    if (event.type === 'llm.request' && hasNativeLlmRequest) {
+function normalizeFingerprintText(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = collapseWhitespace(value);
+  return normalized ? normalized.slice(0, 800) : undefined;
+}
+
+function getLlmRequestFingerprint(event: CommandEventLike): string | undefined {
+  if (!['llm.request', 'amp.llm.request'].includes(event.type)) return undefined;
+  const transcript = formatMessageTranscript(event.payload.messagesPreview);
+  return normalizeFingerprintText(transcript);
+}
+
+function getLlmResponseFingerprint(event: CommandEventLike): string | undefined {
+  if (!['llm.response', 'amp.llm.response'].includes(event.type)) return undefined;
+  const responseText = getString(event.payload.responseText) ?? getString(event.payload.responsePreview);
+  return normalizeFingerprintText(responseText);
+}
+
+function hasNearbyMatchingNativeEvent(
+  blockEvents: CommandEventLike[],
+  index: number,
+  nativeType: 'amp.llm.request' | 'amp.llm.response',
+  fingerprint: string | undefined,
+): boolean {
+  if (!fingerprint) return false;
+  const start = Math.max(0, index - NATIVE_LLM_DEDUPE_WINDOW);
+  const end = Math.min(blockEvents.length - 1, index + NATIVE_LLM_DEDUPE_WINDOW);
+  for (let cursor = start; cursor <= end; cursor += 1) {
+    if (cursor === index) continue;
+    const candidate = blockEvents[cursor];
+    if (candidate.type !== nativeType) continue;
+    const candidateFingerprint =
+      nativeType === 'amp.llm.request'
+        ? getLlmRequestFingerprint(candidate)
+        : getLlmResponseFingerprint(candidate);
+    if (candidateFingerprint && candidateFingerprint === fingerprint) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function findDuplicateProxyResponseIndices(blockEvents: CommandEventLike[]): Set<number> {
+  const duplicates = new Set<number>();
+  for (let index = 0; index < blockEvents.length; index += 1) {
+    const event = blockEvents[index];
+    if (event.type !== 'llm.response') continue;
+    const fingerprint = getLlmResponseFingerprint(event);
+    if (hasNearbyMatchingNativeEvent(blockEvents, index, 'amp.llm.response', fingerprint)) {
+      duplicates.add(index);
+    }
+  }
+  return duplicates;
+}
+
+function findDuplicateProxyRequestIndices(
+  blockEvents: CommandEventLike[],
+  duplicateProxyResponses: Set<number>,
+): Set<number> {
+  const duplicates = new Set<number>();
+
+  for (let index = 0; index < blockEvents.length; index += 1) {
+    const event = blockEvents[index];
+    if (event.type !== 'llm.request') continue;
+
+    const requestFingerprint = getLlmRequestFingerprint(event);
+    if (hasNearbyMatchingNativeEvent(blockEvents, index, 'amp.llm.request', requestFingerprint)) {
+      duplicates.add(index);
+      continue;
+    }
+
+    const hasNearbyNativeRequest = blockEvents.some((candidate, candidateIndex) => {
+      return (
+        candidate.type === 'amp.llm.request' &&
+        Math.abs(candidateIndex - index) <= NATIVE_LLM_DEDUPE_WINDOW
+      );
+    });
+    const pairedDuplicateProxyResponse = duplicateProxyResponses.has(index + 1);
+    if (hasNearbyNativeRequest && pairedDuplicateProxyResponse) {
+      duplicates.add(index);
+    }
+  }
+
+  return duplicates;
+}
+
+function selectDisplayEvents(blockEvents: CommandEventLike[]): CommandEventLike[] {
+  const duplicateProxyResponses = findDuplicateProxyResponseIndices(blockEvents);
+  const duplicateProxyRequests = findDuplicateProxyRequestIndices(blockEvents, duplicateProxyResponses);
+
+  return blockEvents.filter((event, index) => {
+    if (event.type === 'llm.request' && duplicateProxyRequests.has(index)) {
       return false;
     }
-    if (event.type === 'llm.response' && hasNativeLlmResponse) {
+    if (event.type === 'llm.response' && duplicateProxyResponses.has(index)) {
       return false;
     }
     return true;

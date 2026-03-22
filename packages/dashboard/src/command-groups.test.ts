@@ -196,7 +196,7 @@ describe('buildCommandRuns', () => {
     });
   });
 
-  it('prefers native amp.llm events over proxy llm events when both are present', () => {
+  it('deduplicates proxy llm steps when native amp.llm events describe the same model turn', () => {
     const runs = buildCommandRuns([
       event(1, 'user.command', { command: '总结一下今天的重点新闻' }),
       event(2, 'amp.user.command', {
@@ -215,17 +215,20 @@ describe('buildCommandRuns', () => {
       }),
       event(4, 'llm.request', {
         provider: 'openrouter',
-        model: 'qwen/qwen3.5-flash-02-23',
-        messageCount: 0,
+        model: 'minimax/minimax-m2.7',
+        messageCount: 2,
         toolCount: 24,
-        messagesPreview: [],
+        messagesPreview: [
+          { role: 'system', text: 'You are a careful sandboxed agent.' },
+          { role: 'user', text: '总结一下今天的重点新闻' },
+        ],
       }),
       event(5, 'llm.response', {
         provider: 'openrouter',
-        model: 'qwen/qwen3.5-flash-02-23',
-        tokensIn: 999,
-        tokensOut: 88,
-        responsePreview: '[tool] web_search',
+        model: 'minimax/minimax-m2.7',
+        tokensIn: 1234,
+        tokensOut: 56,
+        responsePreview: '这是今天的重点新闻摘要。',
       }),
       event(6, 'amp.llm.response', {
         source: 'openclaw-native-hook',
@@ -249,6 +252,73 @@ describe('buildCommandRuns', () => {
     expect(runs[0]?.steps[0]).toMatchObject({
       title: 'minimax/minimax-m2.7',
       body: '这是今天的重点新闻摘要。',
+    });
+  });
+
+  it('keeps proxy-only tool-side llm steps when native amp.llm events exist elsewhere in the same run', () => {
+    const runs = buildCommandRuns([
+      event(1, 'user.command', { command: '给我查一下这几天的新闻' }),
+      event(2, 'amp.user.command', {
+        command: '给我查一下这几天的新闻',
+        runId: 'run-mixed-1',
+      }),
+      event(3, 'amp.llm.request', {
+        source: 'openclaw-native-hook',
+        provider: 'openrouter',
+        model: 'minimax/minimax-m2.7',
+        messageCount: 2,
+        messagesPreview: [
+          { role: 'user', text: '给我查一下这几天的新闻' },
+        ],
+      }),
+      event(4, 'amp.llm.response', {
+        source: 'openclaw-native-hook',
+        provider: 'openrouter',
+        model: 'minimax/minimax-m2.7',
+        tokensIn: 1500,
+        tokensOut: 90,
+        responsePreview: '[tool] web_search',
+      }),
+      event(5, 'amp.tool.intent', {
+        toolName: 'web_search',
+        toolInput: { query: 'news 2026年3月 国际新闻' },
+        runId: 'run-mixed-1',
+      }),
+      event(6, 'llm.request', {
+        provider: 'openrouter',
+        model: 'perplexity/sonar-pro',
+        messageCount: 1,
+        toolCount: 0,
+        messagesPreview: [{ role: 'user', text: 'news 2026年3月 国际新闻' }],
+      }),
+      event(7, 'llm.response', {
+        provider: 'openrouter',
+        model: 'perplexity/sonar-pro',
+        tokensIn: 11,
+        tokensOut: 856,
+        responsePreview: '2026年3月国际新闻\n中东局势升级',
+      }),
+      event(8, 'amp.agent.message', {
+        text: '这几天的大新闻主要集中在中东局势。',
+        runId: 'run-mixed-1',
+      }),
+    ]);
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      llmTurns: 2,
+      totalTokensIn: 1511,
+      totalTokensOut: 946,
+      responseText: '这几天的大新闻主要集中在中东局势。',
+    });
+    expect(runs[0]?.steps.map((step) => step.title)).toEqual([
+      'minimax/minimax-m2.7',
+      'perplexity/sonar-pro',
+      'Answer',
+    ]);
+    expect(runs[0]?.steps[1]).toMatchObject({
+      title: 'perplexity/sonar-pro',
+      body: '2026年3月国际新闻\n中东局势升级',
     });
   });
 });
