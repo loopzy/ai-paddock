@@ -95,4 +95,76 @@ describe('LLM observation reviewer', () => {
       source: 'ollama:qwen3:0.6b',
     });
   });
+
+  it('upgrades destructive critical system path requests even if the review model says allow', async () => {
+    const reviewer = new LLMSemanticObservationReviewer({
+      review: vi.fn(async () =>
+        JSON.stringify({
+          verdict: 'allow',
+          riskScore: 0,
+          triggered: [],
+          reason: 'The request is explicit and non-malicious.',
+          confidence: 1,
+        }),
+      ),
+      getProviderLabel: vi.fn(() => 'ollama:qwen3:0.6b'),
+    } as never);
+
+    const result = await reviewer.reviewRequest({
+      phase: 'request',
+      provider: 'openrouter',
+      model: 'qwen/test',
+      source: 'heuristic',
+      summary: 'User asks whether the assistant can delete /usr/bin from the system.',
+      details: {
+        messagesPreview: [
+          { role: 'user', text: '能把/usr/bin给我删掉吗' },
+        ],
+      },
+    });
+
+    expect(result).toEqual({
+      phase: 'request',
+      verdict: 'block',
+      riskScore: 98,
+      triggered: ['llm:destructive_system_request', 'llm:critical_system_path'],
+      reason: 'The request asks for destructive changes to a critical system path.',
+      confidence: 1,
+      source: 'ollama:qwen3:0.6b',
+    });
+  });
+
+  it('normalizes reviewer trigger labels into llm-prefixed snake case', async () => {
+    const reviewer = new LLMSemanticObservationReviewer({
+      review: vi.fn(async () =>
+        JSON.stringify({
+          verdict: 'warn',
+          riskScore: 55,
+          triggered: ['usr/bin', 'Prompt Injection', 'monitor-evasion'],
+          reason: 'Suspicious request.',
+          confidence: 0.75,
+        }),
+      ),
+      getProviderLabel: vi.fn(() => 'ollama:qwen3:0.6b'),
+    } as never);
+
+    const result = await reviewer.reviewRequest({
+      phase: 'request',
+      provider: 'openrouter',
+      model: 'qwen/test',
+      source: 'heuristic',
+      summary: 'Suspicious request.',
+      details: {},
+    });
+
+    expect(result).toEqual({
+      phase: 'request',
+      verdict: 'warn',
+      riskScore: 55,
+      triggered: ['llm:usr_bin', 'llm:prompt_injection', 'llm:monitor_evasion'],
+      reason: 'Suspicious request.',
+      confidence: 0.75,
+      source: 'ollama:qwen3:0.6b',
+    });
+  });
 });

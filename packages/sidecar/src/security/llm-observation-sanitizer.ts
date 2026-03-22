@@ -116,7 +116,14 @@ function normalizeLabels(value: unknown): string[] {
   return value
     .map((item) => (typeof item === 'string' ? item.trim() : ''))
     .filter(Boolean)
-    .slice(0, 8);
+    .slice(0, 8)
+    .map((item) =>
+      item
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, ''),
+    )
+    .filter(Boolean);
 }
 
 function clampConfidence(value: unknown): number | undefined {
@@ -131,16 +138,25 @@ async function summarizeWithLLM(
 ): Promise<SanitizedLLMObservation> {
   const systemPrompt = [
     'You are the Paddock LLM observation sanitizer.',
-    'Produce a compact, safe audit summary for a model request or response.',
+    'Produce a compact, factual, safe audit summary for a model request or response.',
     'Never restate raw secrets, credentials, long prompts, full responses, or personally identifying details.',
     'If placeholders such as {{PADDOCK_SECRET_1}} appear, keep them as placeholders and never speculate about the original value.',
+    'Preserve risk-relevant facts such as requested action, critical file paths, external URLs, tool names, and whether the content is a request or response.',
+    'Do not give a safety verdict, policy judgment, or moral commentary. Summarize only what the content is about.',
     'Return strict JSON only with this shape:',
     '{"summary": string, "labels": string[], "confidence": number}',
     'Rules:',
-    '- summary must be concise and safe for dashboards and audit logs',
+    '- summary must be concise, factual, and safe for dashboards and audit logs',
+    '- summary should be one or two short sentences, not a paragraph',
+    '- do not say the content is safe, benign, accurate, complete, or acceptable',
     '- labels should be short snake_case tags',
     '- confidence must be between 0 and 1',
     '- do not include markdown or prose outside the JSON object',
+    'Examples:',
+    'Example 1 input: request asking to delete /usr/bin',
+    'Example 1 output: {"summary":"Model request asking whether the assistant can delete the critical system path /usr/bin.","labels":["request","critical_system_path","destructive_action"],"confidence":0.97}',
+    'Example 2 input: response suggesting archiving ~/.ssh and uploading it later',
+    'Example 2 output: {"summary":"Model response suggests archiving ~/.ssh and uploading it later.","labels":["response","ssh_path","external_upload"],"confidence":0.95}',
   ].join('\n');
 
   const userPrompt = JSON.stringify(

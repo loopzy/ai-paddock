@@ -245,6 +245,16 @@ export OPENCLAW_SRC=/path/to/your/openclaw
 
 Lookup priority: `OPENCLAW_SRC` → `thirdparty/openclaw`
 
+> Important: Paddock currently depends on a small set of OpenClaw source patches to support the synchronous `before_llm_request` / `after_llm_response` runtime hooks and related integration points. This repository ships those override files in [patches/openclaw-overlay](patches/openclaw-overlay).
+>
+> If `OPENCLAW_SRC` points at your own separate OpenClaw checkout, do not patch files by hand. Run:
+>
+> ```bash
+> ./scripts/sync-openclaw-patches.sh "$OPENCLAW_SRC"
+> ```
+>
+> That script copies the files from [patches/openclaw-overlay](patches/openclaw-overlay) into your checkout before you build or deploy.
+
 ### Step 4: Pull Base Images
 
 ```bash
@@ -297,6 +307,8 @@ pnpm run prepare:node-runtime
 This step is an optimization for faster startup and more predictable release packaging. It is not required if your priority is maximum compatibility or source-level debugging inside the VM.
 
 If you skip this step, Paddock can still deploy OpenClaw by copying the pinned source tree into the VM and performing the official install/build there.
+
+If you changed [thirdparty/openclaw](thirdparty/openclaw), or just synced those patches into a custom `OPENCLAW_SRC` with [sync-openclaw-patches.sh](scripts/sync-openclaw-patches.sh), this is the step that actually bakes those changes into the official runtime bundle.
 
 ```bash
 # OpenClaw runtime bundle (optional, for faster startup)
@@ -367,6 +379,16 @@ Paddock chooses the deployment path in this order:
 2. **VM source install** — copies the pinned OpenClaw source tree from `OPENCLAW_SRC` or `thirdparty/openclaw`, then installs and builds it inside the VM
 
 > If you built the runtime bundle in Step 7, Paddock uses it first for faster startup. If not, or if you prefer maximum compatibility, Paddock can install OpenClaw from the pinned source tree inside the VM. On first deployment, the install script will also set up Chromium inside the VM via `apt` if a browser is not yet available. The VM source path installs `pnpm` and OpenClaw dependencies inside the VM, so it is slower and may require network access from the sandbox.
+>
+> If you use your own separate OpenClaw checkout, use this exact flow before redeploying:
+>
+> 1. Run `./scripts/sync-openclaw-patches.sh "$OPENCLAW_SRC"`
+> 2. Run `pnpm run build:openclaw-runtime`
+> 3. Run `./scripts/build-sidecar.sh`
+> 4. Restart `control-plane`
+> 5. Click **Deploy Agent** again in the Dashboard
+>
+> A plain `Stop -> Start` on an existing session does not replace the OpenClaw runtime that is already installed inside the VM.
 
 ### Step 14: Start Using OpenClaw in the Sandbox
 
@@ -418,6 +440,21 @@ export PADDOCK_LLM_SANITIZER_MAX_TOKENS=300
 
 ### Use a Dedicated Review Model for Prompt / Response Audit
 
+`PADDOCK_LLM_AUDIT_*` supports both local models and OpenAI-compatible endpoints.
+
+Local model example (Ollama):
+
+```bash
+export PADDOCK_LLM_AUDIT_ENABLED=1
+export PADDOCK_LLM_AUDIT_PROVIDER=ollama
+export PADDOCK_LLM_AUDIT_MODEL=qwen3:0.6b
+export PADDOCK_LLM_AUDIT_BASE_URL=http://127.0.0.1:11434
+export PADDOCK_LLM_AUDIT_TIMEOUT_MS=30000
+export PADDOCK_LLM_AUDIT_MAX_TOKENS=300
+```
+
+OpenAI-compatible example:
+
 ```bash
 export PADDOCK_LLM_AUDIT_ENABLED=1
 export PADDOCK_LLM_AUDIT_PROVIDER=openai-compatible
@@ -427,6 +464,8 @@ export PADDOCK_LLM_AUDIT_API_KEY=your-key
 export PADDOCK_LLM_AUDIT_TIMEOUT_MS=8000
 export PADDOCK_LLM_AUDIT_MAX_TOKENS=300
 ```
+
+`gpt-4.1-mini` here is only an example of an OpenAI-compatible audit backend, not a requirement.
 
 Both dedicated interfaces also support:
 

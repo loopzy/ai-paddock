@@ -820,6 +820,8 @@ export class SessionManager {
     let stage = 'agent.copy_adapter';
 
     try {
+      await this.prepareOpenClawRuntimeForRedeploy(driver, vmId);
+
       this.eventStore.append(sessionId, 'amp.session.start', {
         phase: 'agent.copy_adapter',
         message: 'Copying OpenClaw deployment scripts...',
@@ -900,6 +902,8 @@ export class SessionManager {
     const packageManager = this.getGuestPackageManager(session.sandboxType);
 
     try {
+      await this.prepareOpenClawRuntimeForRedeploy(driver, vmId);
+
       this.eventStore.append(sessionId, 'amp.session.start', {
         phase: 'agent.copy_adapter',
         message: 'Copying OpenClaw deployment scripts...',
@@ -1049,6 +1053,26 @@ export class SessionManager {
       transport: deployment.commandTransport,
     });
     this.eventStore.append(sessionId, 'amp.session.start', { phase: 'agent_ready', message: 'OpenClaw connected to Paddock' });
+  }
+
+  private async prepareOpenClawRuntimeForRedeploy(driver: SandboxDriver, vmId: string): Promise<void> {
+    await this.execOrThrow(
+      driver,
+      vmId,
+      [
+        'if [ -s /var/run/openclaw.pid ]; then',
+        '  pid="$(cat /var/run/openclaw.pid)";',
+        '  kill "$pid" 2>/dev/null || true;',
+        '  for _ in 1 2 3 4 5; do',
+        '    kill -0 "$pid" 2>/dev/null || break;',
+        '    sleep 1;',
+        '  done;',
+        'fi;',
+        'rm -f /var/run/openclaw.pid;',
+        'rm -rf /opt/paddock/openclaw-runtime;',
+      ].join(' '),
+      'Failed to prepare the existing OpenClaw runtime for redeploy',
+    );
   }
 
   private async writeOpenClawConfig(

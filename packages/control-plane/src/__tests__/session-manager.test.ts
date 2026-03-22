@@ -583,6 +583,37 @@ describe('SessionManager', () => {
       expect(eventStore.getEvents(session.id).some((event) => event.type === 'amp.agent.ready')).toBe(true);
     });
 
+    it('should clean the existing OpenClaw runtime before redeploying the official bundle', async () => {
+      process.env.PADDOCK_OPENCLAW_DEPLOYMENT_MODE = 'official-script';
+      process.env.OPENROUTER_API_KEY = 'or-test';
+
+      const session = await manager.create('openclaw');
+      await manager.start(session.id);
+      await manager.deployAgent(session.id, 'openclaw');
+
+      const firstDeployCallCount = driver.calls.length;
+
+      await manager.deployAgent(session.id, 'openclaw');
+
+      const redeployCalls = driver.calls.slice(firstDeployCallCount);
+      const prepareIndex = redeployCalls.findIndex(
+        (call) =>
+          call.method === 'exec' &&
+          String(call.args[1]).includes('rm -rf /opt/paddock/openclaw-runtime') &&
+          String(call.args[1]).includes('kill "$pid"'),
+      );
+      const runtimeCopyIndex = redeployCalls.findIndex(
+        (call) =>
+          (call.method === 'exec' &&
+            String(call.args[1]).includes('tar -xzf /opt/paddock/openclaw-runtime.tar.gz -C /opt/paddock')) ||
+          (call.method === 'copyIn' &&
+            String(call.args[1]).includes('openclaw-runtime')),
+      );
+
+      expect(prepareIndex).toBeGreaterThanOrEqual(0);
+      expect(runtimeCopyIndex).toBeGreaterThan(prepareIndex);
+    });
+
     it('should resume an existing official OpenClaw install without reinstalling it', async () => {
       process.env.PADDOCK_OPENCLAW_DEPLOYMENT_MODE = 'official-script';
       process.env.OPENROUTER_API_KEY = 'or-test';

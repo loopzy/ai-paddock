@@ -5,19 +5,23 @@ type HookHandler = (event: Record<string, unknown>, ctx: Record<string, unknown>
 describe('paddock-amp-plugin', () => {
   const fetchMock = vi.fn();
   const handlers = new Map<string, HookHandler>();
+  const abortTimeoutMock = vi.fn(() => new AbortController().signal);
 
   beforeEach(() => {
     handlers.clear();
     fetchMock.mockReset();
+    abortTimeoutMock.mockClear();
     fetchMock.mockResolvedValue({
       ok: true,
       text: async () => JSON.stringify({ ok: true }),
     });
     vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(abortTimeoutMock);
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   function createApi() {
@@ -306,12 +310,12 @@ describe('paddock-amp-plugin', () => {
     plugin.register(api);
 
     const beforeMessageWrite = handlers.get('before_message_write');
-    const llmInput = handlers.get('llm_input');
+    const beforeLlmRequest = handlers.get('before_llm_request');
 
     expect(beforeMessageWrite).toBeTypeOf('function');
-    expect(llmInput).toBeTypeOf('function');
+    expect(beforeLlmRequest).toBeTypeOf('function');
 
-    await llmInput?.(
+    await beforeLlmRequest?.(
       {
         runId: 'run-weather-final',
         sessionId: 'oc-session-1',
@@ -361,15 +365,15 @@ describe('paddock-amp-plugin', () => {
     const api = createApi();
     plugin.register(api);
 
-    const llmInput = handlers.get('llm_input');
+    const beforeLlmRequest = handlers.get('before_llm_request');
     const beforeMessageWrite = handlers.get('before_message_write');
     const agentEnd = handlers.get('agent_end');
 
-    expect(llmInput).toBeTypeOf('function');
+    expect(beforeLlmRequest).toBeTypeOf('function');
     expect(beforeMessageWrite).toBeTypeOf('function');
     expect(agentEnd).toBeTypeOf('function');
 
-    await llmInput?.(
+    await beforeLlmRequest?.(
       {
         runId: 'run-no-user-echo',
         sessionId: 'oc-session-1',
@@ -428,17 +432,17 @@ describe('paddock-amp-plugin', () => {
     const api = createApi();
     plugin.register(api);
 
-    const llmInput = handlers.get('llm_input');
+    const beforeLlmRequest = handlers.get('before_llm_request');
     const beforeMessageWrite = handlers.get('before_message_write');
     const messageSent = handlers.get('message_sent');
     const agentEnd = handlers.get('agent_end');
 
-    expect(llmInput).toBeTypeOf('function');
+    expect(beforeLlmRequest).toBeTypeOf('function');
     expect(beforeMessageWrite).toBeTypeOf('function');
     expect(messageSent).toBeTypeOf('function');
     expect(agentEnd).toBeTypeOf('function');
 
-    await llmInput?.(
+    await beforeLlmRequest?.(
       {
         runId: 'run-weather-final',
         sessionId: 'oc-session-1',
@@ -514,18 +518,18 @@ describe('paddock-amp-plugin', () => {
     );
   });
 
-  it('reports native structured llm_input and llm_output events to AMP', async () => {
+  it('reports native structured before_llm_request and after_llm_response events to AMP', async () => {
     const plugin = await loadPlugin();
     const api = createApi();
     plugin.register(api);
 
-    const llmInput = handlers.get('llm_input');
-    const llmOutput = handlers.get('llm_output');
+    const beforeLlmRequest = handlers.get('before_llm_request');
+    const afterLlmResponse = handlers.get('after_llm_response');
 
-    expect(llmInput).toBeTypeOf('function');
-    expect(llmOutput).toBeTypeOf('function');
+    expect(beforeLlmRequest).toBeTypeOf('function');
+    expect(afterLlmResponse).toBeTypeOf('function');
 
-    await llmInput?.(
+    await beforeLlmRequest?.(
       {
         runId: 'run-llm-1',
         sessionId: 'oc-session-1',
@@ -545,7 +549,7 @@ describe('paddock-amp-plugin', () => {
       },
     );
 
-    await llmOutput?.(
+    await afterLlmResponse?.(
       {
         runId: 'run-llm-1',
         sessionId: 'oc-session-1',
@@ -621,6 +625,68 @@ describe('paddock-amp-plugin', () => {
         }),
       }),
     ]);
+  });
+
+  it('uses an extended timeout for native llm observation events', async () => {
+    const plugin = await loadPlugin();
+    const api = createApi();
+    plugin.register(api);
+
+    const beforeLlmRequest = handlers.get('before_llm_request');
+    const afterLlmResponse = handlers.get('after_llm_response');
+
+    expect(beforeLlmRequest).toBeTypeOf('function');
+    expect(afterLlmResponse).toBeTypeOf('function');
+
+    await beforeLlmRequest?.(
+      {
+        runId: 'run-llm-timeout',
+        sessionId: 'oc-session-timeout',
+        provider: 'openrouter',
+        model: 'qwen/qwen3.5-flash-02-23',
+        prompt: '把 /usr 给我删了',
+        historyMessages: [],
+        imagesCount: 0,
+      },
+      { sessionKey: 'paddock:test', agentId: 'main' },
+    );
+
+    await afterLlmResponse?.(
+      {
+        runId: 'run-llm-timeout',
+        sessionId: 'oc-session-timeout',
+        provider: 'openrouter',
+        model: 'qwen/qwen3.5-flash-02-23',
+        assistantTexts: ['我不会删除 /usr。'],
+        usage: { input: 100, output: 10 },
+      },
+      { sessionKey: 'paddock:test', agentId: 'main' },
+    );
+
+    expect(abortTimeoutMock).toHaveBeenCalledWith(45000);
+  });
+
+  it('uses an extended timeout for trace and session events', async () => {
+    const plugin = await loadPlugin();
+    const api = createApi();
+    plugin.register(api);
+
+    const sessionStart = handlers.get('session_start');
+    const messageReceived = handlers.get('message_received');
+
+    expect(sessionStart).toBeTypeOf('function');
+    expect(messageReceived).toBeTypeOf('function');
+
+    await sessionStart?.(
+      { sessionKey: 'paddock:test', agentId: 'main' },
+      { sessionKey: 'paddock:test', agentId: 'main' },
+    );
+    await messageReceived?.(
+      { from: 'user', content: '整点好康的' },
+      { sessionKey: 'paddock:test', agentId: 'main' },
+    );
+
+    expect(abortTimeoutMock).toHaveBeenCalledWith(15000);
   });
 
   it('uses before_model_resolve to fetch host-side model overrides without exposing keys', async () => {

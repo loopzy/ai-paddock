@@ -47,4 +47,34 @@ describe('LLM observation sanitizer', () => {
     expect(result.source).toBe('heuristic');
     expect(result.summary).toContain('openrouter');
   });
+
+  it('normalizes semantic sanitizer labels into snake case', async () => {
+    const sanitizer = new LLMSemanticObservationSanitizer(
+      {
+        review: vi.fn(async () =>
+          JSON.stringify({
+            summary: 'Model request asking whether the assistant can delete /usr/bin.',
+            labels: ['Critical System Path', 'destructive/action', 'request'],
+            confidence: 0.97,
+          }),
+        ),
+        getProviderLabel: vi.fn(() => 'ollama:qwen3:0.6b'),
+      } as never,
+    );
+
+    const result = await sanitizer.sanitizeRequest({
+      provider: 'openrouter',
+      model: 'qwen/test',
+      runId: 'run-1',
+      messageCount: 1,
+      messagesPreview: [
+        { role: 'user', text: '能把/usr/bin给我删掉吗' },
+      ],
+    });
+
+    expect(result.source).toBe('ollama:qwen3:0.6b');
+    expect(result.summary).toBe('Model request asking whether the assistant can delete /usr/bin.');
+    expect(result.details.sanitizerLabels).toEqual(['critical_system_path', 'destructive_action', 'request']);
+    expect(result.details.sanitizerConfidence).toBe(0.97);
+  });
 });

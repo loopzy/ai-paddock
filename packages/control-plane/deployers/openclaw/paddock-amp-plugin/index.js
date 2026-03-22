@@ -5,6 +5,31 @@ import { randomUUID } from 'node:crypto';
 const DEFAULT_SIDECAR_URL = 'http://127.0.0.1:8801';
 const DEFAULT_WORKSPACE_ROOT = '/workspace';
 const DEFAULT_LOG_FILE = '/tmp/openclaw/paddock-amp-plugin.log';
+const DEFAULT_AMP_EVENT_TIMEOUT_MS = Number(process.env.PADDOCK_AMP_EVENT_TIMEOUT_MS ?? 5000);
+const EXTENDED_AMP_EVENT_TIMEOUT_MS = Number(process.env.PADDOCK_AMP_EVENT_EXTENDED_TIMEOUT_MS ?? 15000);
+const LLM_AMP_EVENT_TIMEOUT_MS = Number(process.env.PADDOCK_AMP_EVENT_LLM_TIMEOUT_MS ?? 45000);
+
+function clampTimeoutMs(value, fallback) {
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function timeoutForAmpEvent(eventType, explicitTimeoutMs) {
+  if (Number.isFinite(explicitTimeoutMs) && explicitTimeoutMs > 0) {
+    return Math.floor(explicitTimeoutMs);
+  }
+  if (eventType === 'amp.llm.request' || eventType === 'amp.llm.response') {
+    return clampTimeoutMs(LLM_AMP_EVENT_TIMEOUT_MS, 45000);
+  }
+  if (
+    eventType === 'amp.trace' ||
+    eventType === 'amp.agent.message' ||
+    eventType === 'amp.session.start' ||
+    eventType === 'amp.session.end'
+  ) {
+    return clampTimeoutMs(EXTENDED_AMP_EVENT_TIMEOUT_MS, 15000);
+  }
+  return clampTimeoutMs(DEFAULT_AMP_EVENT_TIMEOUT_MS, 5000);
+}
 
 function resolveRuntimeConfig(api) {
   const pluginConfig =
@@ -199,7 +224,8 @@ function serializeResultPayload(event) {
   };
 }
 
-async function reportAmpEvent(config, log, eventType, payload, timeoutMs = 2000) {
+async function reportAmpEvent(config, log, eventType, payload, timeoutMs) {
+  const effectiveTimeoutMs = timeoutForAmpEvent(eventType, timeoutMs);
   try {
     await postJson(
       `${config.sidecarUrl}/amp/event`,
@@ -207,11 +233,12 @@ async function reportAmpEvent(config, log, eventType, payload, timeoutMs = 2000)
         toolName: eventType,
         result: JSON.stringify(payload),
       },
-      timeoutMs,
+      effectiveTimeoutMs,
     );
   } catch (error) {
     log('amp_event:report-failed', {
       eventType,
+      timeoutMs: effectiveTimeoutMs,
       error: String(error),
     });
   }
@@ -311,7 +338,7 @@ function messageDedupKey(ctx, text) {
   return `${ctx?.sessionKey ?? 'session'}:${ctx?.runId ?? 'run'}:${text}`;
 }
 
-async function reportTraceEvent(config, log, phase, event, ctx, timeoutMs = 2000) {
+async function reportTraceEvent(config, log, phase, event, ctx, timeoutMs) {
   const payload = buildLifecyclePayload(phase, event, ctx);
   await reportAmpEvent(config, log, 'amp.trace', payload, timeoutMs);
 }
@@ -767,10 +794,10 @@ export default {
       await reportTraceEvent(config, log, 'openclaw.agent_end', payload, ctx);
     });
 
-    api.on('llm_input', async (event, ctx) => {
+    api.on('before_llm_request', async (event, ctx) => {
       rememberRunId(event, ctx);
       const payload = buildNativeLlmRequestPayload(event, ctx);
-      log('llm_input', {
+      log('before_llm_request', {
         runId: payload.runId,
         provider: payload.provider,
         model: payload.model,
@@ -779,10 +806,10 @@ export default {
       await reportAmpEvent(config, log, 'amp.llm.request', payload);
     });
 
-    api.on('llm_output', async (event, ctx) => {
+    api.on('after_llm_response', async (event, ctx) => {
       rememberRunId(event, ctx);
       const payload = buildNativeLlmResponsePayload(event, ctx);
-      log('llm_output', {
+      log('after_llm_response', {
         runId: payload.runId,
         provider: payload.provider,
         model: payload.model,

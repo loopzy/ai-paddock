@@ -33,10 +33,8 @@ if [ ! -d "$OPENCLAW_SRC/node_modules" ]; then
   pnpm --dir "$OPENCLAW_SRC" install --ignore-scripts --no-frozen-lockfile
 fi
 
-if [ ! -d "$OPENCLAW_SRC/dist" ]; then
-  echo "Building upstream OpenClaw..."
-  pnpm --dir "$OPENCLAW_SRC" build
-fi
+echo "Building upstream OpenClaw..."
+pnpm --dir "$OPENCLAW_SRC" build
 
 echo "Packing upstream OpenClaw release files..."
 PACK_FILE="$(

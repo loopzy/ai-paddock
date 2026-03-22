@@ -227,6 +227,16 @@ export OPENCLAW_SRC=/path/to/your/openclaw
 
 查找优先级：`OPENCLAW_SRC` → `thirdparty/openclaw`
 
+> 注意：Paddock 当前依赖一组对 OpenClaw 的源码补丁来支持同步 `before_llm_request` / `after_llm_response` hook 等运行时接入。这个仓库已经把这些覆盖文件单独打包在 [patches/openclaw-overlay](patches/openclaw-overlay)。
+>
+> 如果你把 `OPENCLAW_SRC` 指向了你自己单独维护的 OpenClaw checkout，不需要手工找文件逐个覆盖。直接执行：
+>
+> ```bash
+> ./scripts/sync-openclaw-patches.sh "$OPENCLAW_SRC"
+> ```
+>
+> 这个脚本会把 [patches/openclaw-overlay](patches/openclaw-overlay) 里的覆盖文件同步到你的 OpenClaw 源码目录。
+
 ### 第 4 步：拉取基础镜像
 
 ```bash
@@ -342,6 +352,8 @@ pnpm run prepare:node-runtime
 
 跳过后，Paddock 仍然可以把固定版本的 OpenClaw 源码复制进 VM，并在 VM 内完成官方安装和构建。
 
+如果你修改过 [thirdparty/openclaw](thirdparty/openclaw)，或者刚刚用 [sync-openclaw-patches.sh](scripts/sync-openclaw-patches.sh) 把补丁同步到了自定义 `OPENCLAW_SRC`，这一步就是把修改真正打进 `official runtime bundle` 的关键步骤。
+
 ```bash
 # 构建 OpenClaw 运行时 bundle（可选，用于加快启动）
 pnpm run build:openclaw-runtime
@@ -411,6 +423,16 @@ Paddock 会按下面的顺序选择部署路径：
 2. **VM 内源码安装**：从 `OPENCLAW_SRC` 或 `thirdparty/openclaw` 复制固定版本源码到 VM，再在 VM 内安装并构建
 
 > 如果你在第 7 步构建了 runtime bundle，Paddock 会优先使用它来获得更快的启动速度。如果没有构建，或者你更看重最大兼容性，Paddock 也可以直接在 VM 内按固定源码安装 OpenClaw。首次部署时，安装脚本还会在 VM 内通过 `apt` 安装 Chromium 浏览器（如果尚未安装）。VM 内源码安装这条路径还会在 VM 内安装 `pnpm` 和 OpenClaw 依赖，所以会更慢，并且可能需要沙盒具备网络访问能力。
+>
+> 如果你使用的是自己单独 clone 的 OpenClaw，部署前请按下面的真实顺序来：
+>
+> 1. 先运行 `./scripts/sync-openclaw-patches.sh "$OPENCLAW_SRC"`
+> 2. 运行 `pnpm run build:openclaw-runtime`
+> 3. 运行 `./scripts/build-sidecar.sh`
+> 4. 重启 `control-plane`
+> 5. 在 Dashboard 里重新点击 **Deploy Agent**
+>
+> 仅仅 `Stop -> Start` 现有 session 不会替换已经装进 VM 的 OpenClaw runtime。
 
 ### 第 14 步：在沙盒内使用 OpenClaw
 
@@ -462,6 +484,21 @@ export PADDOCK_LLM_SANITIZER_MAX_TOKENS=300
 
 ### 为 prompt / response 审核单独指定模型
 
+`PADDOCK_LLM_AUDIT_*` 同时支持本地模型和 OpenAI-compatible 接口。
+
+本地模型示例（Ollama）：
+
+```bash
+export PADDOCK_LLM_AUDIT_ENABLED=1
+export PADDOCK_LLM_AUDIT_PROVIDER=ollama
+export PADDOCK_LLM_AUDIT_MODEL=qwen3:0.6b
+export PADDOCK_LLM_AUDIT_BASE_URL=http://127.0.0.1:11434
+export PADDOCK_LLM_AUDIT_TIMEOUT_MS=30000
+export PADDOCK_LLM_AUDIT_MAX_TOKENS=300
+```
+
+OpenAI-compatible 示例：
+
 ```bash
 export PADDOCK_LLM_AUDIT_ENABLED=1
 export PADDOCK_LLM_AUDIT_PROVIDER=openai-compatible
@@ -471,6 +508,8 @@ export PADDOCK_LLM_AUDIT_API_KEY=your-key
 export PADDOCK_LLM_AUDIT_TIMEOUT_MS=8000
 export PADDOCK_LLM_AUDIT_MAX_TOKENS=300
 ```
+
+这里的 `gpt-4.1-mini` 只是一个 OpenAI-compatible 示例模型，不代表审核只能用这个模型。
 
 这两套独立接口还支持：
 

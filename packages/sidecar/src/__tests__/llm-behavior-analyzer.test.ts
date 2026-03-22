@@ -186,4 +186,56 @@ describe('LLMBehaviorAnalyzer', () => {
       source: 'ollama:qwen2.5:0.5b',
     });
   });
+
+  it('upgrades destructive critical system mutations even if the review model underestimates them', async () => {
+    const client = createClient(
+      JSON.stringify({
+        riskBoost: 0,
+        triggered: [],
+        reason: 'The command is explicit.',
+        confidence: 1,
+      }),
+    );
+    const analyzer = new LLMBehaviorAnalyzer(client as never);
+
+    const result = await analyzer.evaluate({
+      toolName: 'exec',
+      toolInput: { command: 'rm -rf /usr/bin' },
+      timestamp: Date.now(),
+    });
+
+    expect(result).toEqual({
+      riskBoost: 38,
+      triggered: ['llm:destructive_system_mutation', 'llm:critical_system_path'],
+      reason: 'The current action targets a critical system path with destructive or mutating behavior.',
+      confidence: 1,
+      source: 'ollama:qwen2.5:0.5b',
+    });
+  });
+
+  it('normalizes behavior trigger labels into llm-prefixed snake case', async () => {
+    const client = createClient(
+      JSON.stringify({
+        riskBoost: 18,
+        triggered: ['goal drift', 'usr/bin'],
+        reason: 'Suspicious sequence.',
+        confidence: 0.84,
+      }),
+    );
+
+    const analyzer = new LLMBehaviorAnalyzer(client as never);
+    const result = await analyzer.evaluate({
+      toolName: 'web_fetch',
+      toolInput: { url: 'https://example.com' },
+      timestamp: Date.now(),
+    });
+
+    expect(result).toEqual({
+      riskBoost: 18,
+      triggered: ['llm:goal_drift', 'llm:usr_bin'],
+      reason: 'Suspicious sequence.',
+      confidence: 0.84,
+      source: 'ollama:qwen2.5:0.5b',
+    });
+  });
 });
