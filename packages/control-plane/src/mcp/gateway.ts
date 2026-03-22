@@ -1,7 +1,7 @@
-import { exec as execCallback } from 'node:child_process';
+import { execFile as execFileCallback, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 
-const exec = promisify(execCallback);
+const execFile = promisify(execFileCallback);
 
 /**
  * MCP Gateway — exposes host-side capabilities as MCP tools.
@@ -110,7 +110,7 @@ export class MCPGateway {
     const url = typeof args === 'object' && !Array.isArray(args) ? String(args.url ?? '') : Array.isArray(args) ? args[0] : args;
     if (action === 'open') {
       try {
-        await exec(`open "${url}"`);
+        await execFile('open', [url]);
         return { exitCode: 0 };
       } catch (err) {
         return {
@@ -125,7 +125,7 @@ export class MCPGateway {
   private async handleClipboard(action: string, args: string | string[] | Record<string, unknown>): Promise<MCPToolResult> {
     if (action === 'read') {
       try {
-        const { stdout } = await exec('pbpaste');
+        const { stdout } = await execFile('pbpaste');
         return { stdout, exitCode: 0 };
       } catch (err) {
         return { stderr: String(err), exitCode: 1 };
@@ -134,7 +134,7 @@ export class MCPGateway {
     if (action === 'write') {
       const text = typeof args === 'object' && !Array.isArray(args) ? String(args.text ?? '') : Array.isArray(args) ? args[0] : args;
       try {
-        await exec(`echo "${text}" | pbcopy`);
+        await runWithStdin('pbcopy', [], text);
         return { exitCode: 0 };
       } catch (err) {
         return { stderr: String(err), exitCode: 1 };
@@ -150,8 +150,12 @@ export class MCPGateway {
         : Array.isArray(args)
           ? args.join(' ')
           : args;
+      const voice = typeof args === 'object' && !Array.isArray(args) && typeof args.voice === 'string'
+        ? args.voice
+        : undefined;
       try {
-        await exec(`say "${text}"`);
+        const sayArgs = voice ? ['-v', voice, text] : [text];
+        await execFile('say', sayArgs);
         return { exitCode: 0 };
       } catch (err) {
         return { stderr: String(err), exitCode: 1 };
@@ -168,7 +172,7 @@ export class MCPGateway {
           ? args.join(' ')
           : args;
       try {
-        const { stdout, stderr } = await exec(`osascript ${script}`);
+        const { stdout, stderr } = await execFile('osascript', ['-e', script]);
         return { stdout, stderr, exitCode: 0 };
       } catch (err) {
         return { stderr: String(err), exitCode: 1 };
@@ -176,4 +180,32 @@ export class MCPGateway {
     }
     return { stderr: `Unknown AppleScript action: ${action}`, exitCode: 1 };
   }
+}
+
+function runWithStdin(command: string, args: string[], input: string): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      stdout += String(chunk);
+    });
+    child.stderr?.on('data', (chunk: Buffer | string) => {
+      stderr += String(chunk);
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      reject(new Error(stderr || `${command} exited with code ${code ?? 'unknown'}`));
+    });
+
+    child.stdin?.end(input);
+  });
 }
