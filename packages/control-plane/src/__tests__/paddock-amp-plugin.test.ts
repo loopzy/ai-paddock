@@ -541,6 +541,49 @@ describe('paddock-amp-plugin', () => {
     });
   });
 
+  it('accepts cross-provider overrides from before_model_resolve when the host policy changes provider', async () => {
+    fetchMock.mockImplementation(async (input: string | URL | Request) => {
+      if (String(input).includes('/amp/control')) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              providerOverride: 'anthropic',
+              modelOverride: 'claude-3-5-sonnet-latest',
+            }),
+        };
+      }
+      return {
+        ok: true,
+        text: async () => JSON.stringify({ ok: true }),
+      };
+    });
+
+    const plugin = await loadPlugin();
+    const api = createApi();
+    plugin.register(api);
+
+    const beforeModelResolve = handlers.get('before_model_resolve');
+    expect(beforeModelResolve).toBeTypeOf('function');
+
+    const result = await beforeModelResolve?.(
+      {
+        provider: 'openrouter',
+        model: 'minimax/minimax-m2.7',
+      },
+      {
+        sessionKey: 'paddock:test',
+        agentId: 'main',
+        runId: 'run-llm-provider-switch',
+      },
+    );
+
+    expect(result).toEqual({
+      providerOverride: 'anthropic',
+      modelOverride: 'claude-3-5-sonnet-latest',
+    });
+  });
+
   it('normalizes shell-style write paths before reporting intent and continuing execution', async () => {
     const plugin = await loadPlugin();
     const api = createApi();

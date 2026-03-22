@@ -127,6 +127,7 @@ export function getOpenClawProviderProxyBaseUrl(provider: string, proxyBaseUrl =
 
 export function buildOpenClawRuntimeConfig(params: {
   llm: AgentLLMConfig;
+  availableProviders?: AgentLLMConfig[];
   gatewayPort?: number;
   browserEnabled?: boolean;
   browserHeadless?: boolean;
@@ -138,6 +139,45 @@ export function buildOpenClawRuntimeConfig(params: {
   const gatewayPort = params.gatewayPort ?? 18789;
   const runtimeProfile = getAgentModelRuntimeProfile(params.llm);
   const reserveTokens = Math.max(1024, Math.min(4096, runtimeProfile.maxTokens));
+  const configuredProviders = new Map<string, AgentLLMConfig>();
+  configuredProviders.set(provider, params.llm);
+  for (const candidate of params.availableProviders ?? []) {
+    const normalizedProvider = normalizeProvider(candidate.provider);
+    if (!normalizedProvider || configuredProviders.has(normalizedProvider)) {
+      continue;
+    }
+    configuredProviders.set(normalizedProvider, candidate);
+  }
+
+  const providerEntries = Object.fromEntries(
+    Array.from(configuredProviders.values()).map((candidate) => {
+      const candidateProvider = normalizeProvider(candidate.provider);
+      const candidateModelRef = toOpenClawModelRef(candidate);
+      const candidateRuntimeProfile = getAgentModelRuntimeProfile(candidate);
+      return [
+        candidateProvider,
+        {
+          baseUrl: getOpenClawProviderProxyBaseUrl(candidateProvider, params.proxyBaseUrl),
+          models: [
+            {
+              id: candidateModelRef,
+              name: candidateModelRef,
+              reasoning: false,
+              input: candidateRuntimeProfile.input,
+              cost: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+              },
+              contextWindow: candidateRuntimeProfile.contextWindow,
+              maxTokens: candidateRuntimeProfile.maxTokens,
+            },
+          ],
+        },
+      ];
+    }),
+  );
 
   return {
     gateway: {
@@ -178,14 +218,9 @@ export function buildOpenClawRuntimeConfig(params: {
         model: {
           primary: modelRef,
         },
-        models: {
-          [modelRef]: {
-            params: {
-              maxTokens: runtimeProfile.maxTokens,
-              parallelToolCalls: false,
-            },
-          },
-        },
+        // Leave the allowlist open so host-side llm_prepare overrides can
+        // switch providers/models without forcing a VM redeploy.
+        models: {},
         compaction: {
           reserveTokens,
           reserveTokensFloor: reserveTokens,
@@ -193,27 +228,7 @@ export function buildOpenClawRuntimeConfig(params: {
       },
     },
     models: {
-      providers: {
-        [provider]: {
-          baseUrl: getOpenClawProviderProxyBaseUrl(provider, params.proxyBaseUrl),
-          models: [
-            {
-              id: modelRef,
-              name: modelRef,
-              reasoning: false,
-              input: runtimeProfile.input,
-              cost: {
-                input: 0,
-                output: 0,
-                cacheRead: 0,
-                cacheWrite: 0,
-              },
-              contextWindow: runtimeProfile.contextWindow,
-              maxTokens: runtimeProfile.maxTokens,
-            },
-          ],
-        },
-      },
+      providers: providerEntries,
     },
     tools: {
       web: {

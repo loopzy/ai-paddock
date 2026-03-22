@@ -219,6 +219,54 @@ describe('Control-plane boundary routes', () => {
     }
   });
 
+  it('returns cross-provider host defaults through /amp/control llm_prepare when the host default is explicit', async () => {
+    const ctx = await createContext();
+    const previousProvider = process.env.PADDOCK_LLM_PROVIDER;
+    const previousModel = process.env.PADDOCK_AGENT_MODEL;
+    process.env.PADDOCK_LLM_PROVIDER = 'anthropic';
+    process.env.PADDOCK_AGENT_MODEL = 'claude-3-5-sonnet-latest';
+
+    try {
+      ctx.llmConfigStore.upsert('anthropic', {
+        apiKey: 'test-key',
+        model: 'claude-3-5-sonnet-latest',
+      });
+      const session = await createRunningSession(ctx);
+
+      const response = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/amp/control`,
+        payload: {
+          toolName: 'llm_prepare',
+          args: {
+            provider: 'openrouter',
+            model: 'minimax/minimax-m2.7',
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        providerOverride: 'anthropic',
+        modelOverride: 'claude-3-5-sonnet-latest',
+        source: 'host-default',
+      });
+    } finally {
+      if (previousProvider === undefined) {
+        delete process.env.PADDOCK_LLM_PROVIDER;
+      } else {
+        process.env.PADDOCK_LLM_PROVIDER = previousProvider;
+      }
+      if (previousModel === undefined) {
+        delete process.env.PADDOCK_AGENT_MODEL;
+      } else {
+        process.env.PADDOCK_AGENT_MODEL = previousModel;
+      }
+      await ctx.app.close();
+      ctx.eventStore.close();
+    }
+  });
+
   it('relays local ollama behavior-review requests through the control plane', async () => {
     const originalFetch = global.fetch;
     process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL = 'http://127.0.0.1:11434';

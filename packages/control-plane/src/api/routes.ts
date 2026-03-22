@@ -75,6 +75,41 @@ function getBehaviorLLMOllamaTarget(): string {
   return trimTrailingSlash(process.env.PADDOCK_BEHAVIOR_LLM_BASE_URL?.trim() || 'http://127.0.0.1:11434');
 }
 
+function resolveExplicitHostLLMSelection(llmConfigStore: LLMConfigStore) {
+  const explicitProvider = process.env.PADDOCK_LLM_PROVIDER?.trim();
+  const explicitModel = process.env.PADDOCK_AGENT_MODEL?.trim();
+
+  if (!explicitProvider && !explicitModel) {
+    return null;
+  }
+
+  try {
+    return resolveAgentLLMConfig(
+      {
+        provider: explicitProvider || undefined,
+        model: explicitModel || undefined,
+      },
+      process.env,
+      llmConfigStore,
+    );
+  } catch {
+    return null;
+  }
+}
+
+function resolveUnambiguousHostLLMSelection(llmConfigStore: LLMConfigStore) {
+  const configuredProviders = getConfiguredAgentProviders(process.env, llmConfigStore);
+  if (configuredProviders.length !== 1) {
+    return null;
+  }
+
+  try {
+    return resolveAgentLLMConfig({ provider: configuredProviders[0] }, process.env, llmConfigStore);
+  } catch {
+    return null;
+  }
+}
+
 interface Deps {
   eventStore: EventStore;
   sessionManager: SessionManager;
@@ -606,6 +641,24 @@ export function registerRoutes(app: FastifyInstance, deps: Deps) {
         const provider = typeof args.provider === 'string' ? args.provider.trim().toLowerCase() : '';
         const currentModel = typeof args.model === 'string' ? args.model.trim() : '';
         const storedModel = provider ? llmConfigStore.getModel(provider) : null;
+        const explicitHostDefault = resolveExplicitHostLLMSelection(llmConfigStore);
+        const unambiguousHostDefault = resolveUnambiguousHostLLMSelection(llmConfigStore);
+        const hostDefault = explicitHostDefault ?? unambiguousHostDefault;
+
+        if (
+          hostDefault &&
+          (
+            !provider ||
+            hostDefault.provider !== provider ||
+            hostDefault.model !== (storedModel || currentModel || '')
+          )
+        ) {
+          return {
+            providerOverride: hostDefault.provider,
+            modelOverride: hostDefault.model,
+            source: 'host-default',
+          };
+        }
 
         if (!provider) {
           return {

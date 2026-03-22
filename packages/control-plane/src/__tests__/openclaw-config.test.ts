@@ -25,6 +25,11 @@ describe('openclaw-config', () => {
   it('builds a gateway config that pins the OpenClaw default model and provider proxy', () => {
     const config = buildOpenClawRuntimeConfig({
       llm: { provider: 'openrouter', model: 'qwen/qwen-2.5-72b-instruct' },
+      availableProviders: [
+        { provider: 'openrouter', model: 'qwen/qwen-2.5-72b-instruct' },
+        { provider: 'anthropic', model: 'claude-3-5-haiku-latest' },
+        { provider: 'openai', model: 'gpt-4o-mini' },
+      ],
       gatewayPort: 18789,
       browserEnabled: true,
       browserHeadless: true,
@@ -69,14 +74,7 @@ describe('openclaw-config', () => {
       reserveTokens: 4096,
       reserveTokensFloor: 4096,
     });
-    expect(config.agents.defaults.models).toEqual({
-      'openrouter/qwen/qwen-2.5-72b-instruct': {
-        params: {
-          maxTokens: 8192,
-          parallelToolCalls: false,
-        },
-      },
-    });
+    expect(config.agents.defaults.models).toEqual({});
     expect(config.models.providers.openrouter).toEqual({
       baseUrl: 'http://127.0.0.1:8800/openrouter/api/v1',
       models: [
@@ -93,6 +91,44 @@ describe('openclaw-config', () => {
           },
           contextWindow: 32768,
           maxTokens: 8192,
+        },
+      ],
+    });
+    expect(config.models.providers.anthropic).toEqual({
+      baseUrl: 'http://127.0.0.1:8800/anthropic',
+      models: [
+        {
+          id: 'anthropic/claude-3-5-haiku-latest',
+          name: 'anthropic/claude-3-5-haiku-latest',
+          reasoning: false,
+          input: ['text', 'image'],
+          cost: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+          },
+          contextWindow: 200000,
+          maxTokens: 8192,
+        },
+      ],
+    });
+    expect(config.models.providers.openai).toEqual({
+      baseUrl: 'http://127.0.0.1:8800/openai/v1',
+      models: [
+        {
+          id: 'openai/gpt-4o-mini',
+          name: 'openai/gpt-4o-mini',
+          reasoning: false,
+          input: ['text', 'image'],
+          cost: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+          },
+          contextWindow: 128000,
+          maxTokens: 16384,
         },
       ],
     });
@@ -113,6 +149,10 @@ describe('openclaw-config', () => {
   it('uses model-specific context metadata for larger OpenRouter presets', () => {
     const config = buildOpenClawRuntimeConfig({
       llm: { provider: 'openrouter', model: 'moonshotai/kimi-k2' },
+      availableProviders: [
+        { provider: 'openrouter', model: 'moonshotai/kimi-k2' },
+        { provider: 'anthropic', model: 'claude-3-5-haiku-latest' },
+      ],
       browserEnabled: true,
     });
 
@@ -123,14 +163,8 @@ describe('openclaw-config', () => {
       contextWindow: 262144,
       maxTokens: 8192,
     });
-    expect(config.agents.defaults.models).toEqual({
-      'openrouter/moonshotai/kimi-k2': {
-        params: {
-          maxTokens: 8192,
-          parallelToolCalls: false,
-        },
-      },
-    });
+    expect(config.agents.defaults.models).toEqual({});
+    expect(Object.keys(config.models.providers)).toEqual(expect.arrayContaining(['openrouter', 'anthropic']));
   });
 
   it('uses provider-specific Sidecar proxy routes', () => {

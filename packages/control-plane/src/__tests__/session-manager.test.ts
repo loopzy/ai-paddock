@@ -467,12 +467,14 @@ describe('SessionManager', () => {
       expect(String(configWriteCall?.args[1])).toContain('"primary": "openrouter/moonshotai/kimi-k2"');
       expect(String(configWriteCall?.args[1])).toContain('"contextTokens": 262144');
       expect(String(configWriteCall?.args[1])).toContain('"maxTokens": 8192');
-      expect(String(configWriteCall?.args[1])).toContain('"parallelToolCalls": false');
+      expect(String(configWriteCall?.args[1])).toContain('"models": {}');
       expect(String(configWriteCall?.args[1])).toContain('"sandbox": {');
       expect(String(configWriteCall?.args[1])).toContain('"mode": "off"');
       expect(String(configWriteCall?.args[1])).toContain('"noSandbox": true');
       expect(String(configWriteCall?.args[1])).toContain('"executablePath": "/usr/bin/chromium"');
       expect(String(configWriteCall?.args[1])).toContain('"baseUrl": "http://127.0.0.1:8800/openrouter/api/v1"');
+      expect(String(configWriteCall?.args[1])).toContain('"baseUrl": "http://127.0.0.1:8800/anthropic"');
+      expect(String(configWriteCall?.args[1])).toContain('"baseUrl": "http://127.0.0.1:8800/openai/v1"');
 
       const execCommands = driver.calls
         .filter((call) => call.method === 'exec')

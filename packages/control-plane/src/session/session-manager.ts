@@ -9,7 +9,7 @@ import { createSandbox } from '../sandbox/factory.js';
 import type { ComputerBoxDriver } from '../sandbox/computer-box-driver.js';
 import { getSandboxStartupMessage } from '../sandbox/sandbox-rootfs.js';
 import type { AgentLLMConfig } from '../mcp/agent-llm-config.js';
-import { getDefaultAgentLLMConfig, resolveAgentLLMConfig } from '../mcp/agent-llm-config.js';
+import { AGENT_LLM_PROVIDER_PRESETS, getDefaultAgentLLMConfig, resolveAgentLLMConfig } from '../mcp/agent-llm-config.js';
 import { LLMConfigStore } from '../config/llm-config-store.js';
 import { resolveAgentDeploymentSpec, type AgentDeploymentSpec } from '../agents/deployments.js';
 import { buildOpenClawRuntimeConfig } from '../agents/openclaw-config.js';
@@ -1058,8 +1058,10 @@ export class SessionManager {
     sandboxType?: SandboxType,
     browserRuntime?: { enabled: boolean; executablePath?: string },
   ): Promise<void> {
+    const availableProviders = this.buildOpenClawRuntimeProviderSeeds(config);
     const runtimeConfig = buildOpenClawRuntimeConfig({
       llm: config,
+      availableProviders,
       gatewayPort: 18789,
       browserEnabled: browserRuntime?.enabled ?? true,
       browserHeadless: this.isBrowserHeadless(sandboxType),
@@ -1074,6 +1076,36 @@ export class SessionManager {
       `mkdir -p /workspace/.openclaw && cat > /workspace/.openclaw/openclaw.json <<'PADDOCK_OPENCLAW_EOF'\n${payload}\nPADDOCK_OPENCLAW_EOF`,
       'Failed to write OpenClaw runtime config',
     );
+  }
+
+  private buildOpenClawRuntimeProviderSeeds(primary: AgentLLMConfig): AgentLLMConfig[] {
+    const seeds = new Map<string, AgentLLMConfig>();
+    const normalize = (value: AgentLLMConfig) => ({
+      provider: value.provider.trim().toLowerCase(),
+      model: value.model.trim(),
+    });
+
+    const add = (value: AgentLLMConfig) => {
+      const normalized = normalize(value);
+      if (!normalized.provider || !normalized.model || seeds.has(normalized.provider)) {
+        return;
+      }
+      seeds.set(normalized.provider, normalized);
+    };
+
+    add(primary);
+
+    for (const preset of AGENT_LLM_PROVIDER_PRESETS) {
+      add({
+        provider: preset.id,
+        model:
+          preset.id === primary.provider.trim().toLowerCase()
+            ? primary.model
+            : this.configStore.getModel(preset.id) || preset.defaultModel,
+      });
+    }
+
+    return Array.from(seeds.values());
   }
 
   private async copyOpenClawRuntimeBundle(driver: SandboxDriver, vmId: string, hostBundleDir: string): Promise<void> {
