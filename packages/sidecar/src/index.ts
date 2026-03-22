@@ -190,8 +190,20 @@ async function handleGateRequest(req: IncomingMessage, res: ServerResponse, gate
           body: JSON.stringify({ correlationId: body.correlationId, toolName: body.toolName, toolInput: body.toolInput, riskScore: verdict.riskScore, triggeredRules: verdict.triggeredRules }),
           signal: AbortSignal.timeout(300000), // 5 min timeout
         });
-        const hitlDecision = await hitlResp.json() as { verdict: string };
-        verdict.verdict = hitlDecision.verdict === 'approved' ? 'approve' : 'reject';
+        const hitlDecision = await hitlResp.json() as { verdict: string; modifiedArgs?: Record<string, unknown> };
+        if (hitlDecision.verdict === 'approved') {
+          verdict.verdict = 'approve';
+        } else if (hitlDecision.verdict === 'modified') {
+          if (hitlDecision.modifiedArgs && typeof hitlDecision.modifiedArgs === 'object') {
+            verdict.verdict = 'modify';
+            verdict.modifiedInput = hitlDecision.modifiedArgs;
+          } else {
+            verdict.verdict = 'reject';
+            verdict.reason = 'HITL returned a modified verdict without updated arguments';
+          }
+        } else {
+          verdict.verdict = 'reject';
+        }
       } catch {
         verdict.verdict = 'reject';
         verdict.reason = 'HITL timeout or error';
@@ -222,6 +234,7 @@ async function handleGateRequest(req: IncomingMessage, res: ServerResponse, gate
         behaviorFlags: verdict.behaviorFlags,
         behaviorReview: verdict.behaviorReview,
         riskBreakdown: verdict.riskBreakdown,
+        modifiedInput: verdict.modifiedInput,
         snapshotRef: verdict.snapshotRef,
       },
       {

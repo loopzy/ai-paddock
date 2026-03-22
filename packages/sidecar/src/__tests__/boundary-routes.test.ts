@@ -226,6 +226,80 @@ describe('Sidecar boundary routes', () => {
     });
   });
 
+  it('maps modified HITL decisions back into a modify verdict with modifiedInput', async () => {
+    const reporter = new ReporterStub();
+    const handler = createAmpGateRequestHandler({
+      sessionId: 'session-sidecar-test',
+      controlPlaneClient: new ControlPlaneClient(['http://control.test']),
+      commandFile: '/tmp/paddock-boundary-test.jsonl',
+      policyGate: {
+        evaluate: vi.fn(() => ({
+          verdict: 'ask',
+          riskScore: 85,
+          triggeredRules: ['destructive_rm'],
+        })),
+        onToolResult: vi.fn(),
+      } as any,
+      reporter: reporter as any,
+      agentMonitor: { reportReady: vi.fn(), reportError: vi.fn(), reportExit: vi.fn(), start: vi.fn(), stop: vi.fn() } as any,
+    });
+
+    global.fetch = vi.fn(async (input: string | URL | Request) => {
+      if (String(input) === 'http://control.test/api/sessions/session-sidecar-test/hitl/gate') {
+        return new Response(
+          JSON.stringify({
+            verdict: 'modified',
+            modifiedArgs: { command: 'rm -rf /workspace/safe-scratch' },
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      }
+      if (String(input) === 'http://control.test/api/sessions/session-sidecar-test/snapshots') {
+        return new Response(JSON.stringify({ id: 'snap-checkpoint-1' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return originalFetch(input);
+    }) as typeof fetch;
+
+    const gateResponse = await invokeHandler(handler, {
+      method: 'POST',
+      url: '/amp/gate',
+      body: JSON.stringify({
+        correlationId: 'corr-modify-1',
+        toolName: 'exec',
+        toolInput: { command: 'rm -rf /tmp/bad' },
+      }),
+    });
+
+    expect(gateResponse.statusCode).toBe(200);
+    expect(JSON.parse(gateResponse.body)).toMatchObject({
+      verdict: 'modify',
+      modifiedInput: { command: 'rm -rf /workspace/safe-scratch' },
+      riskScore: 85,
+    });
+    expect(reporter.events).toContainEqual({
+      type: 'amp.gate.verdict',
+      payload: {
+        correlationId: 'corr-modify-1',
+        toolName: 'exec',
+        verdict: 'modify',
+        riskScore: 85,
+        triggeredRules: ['destructive_rm'],
+        behaviorFlags: undefined,
+        behaviorReview: undefined,
+        riskBreakdown: undefined,
+        modifiedInput: { command: 'rm -rf /workspace/safe-scratch' },
+        snapshotRef: 'snap-checkpoint-1',
+      },
+      opts: { correlationId: 'corr-modify-1', snapshotRef: 'snap-checkpoint-1' },
+    });
+  });
+
   it('sanitizes native amp.llm.request events before reporting them', async () => {
     const reporter = new ReporterStub();
     const onToolResult = vi.fn();

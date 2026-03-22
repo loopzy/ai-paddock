@@ -87,6 +87,8 @@ async function createContext(execHook?: ExecHook) {
     eventStore,
     sessionManager,
     llmConfigStore,
+    hitlArbiter,
+    mcpGateway,
   };
 }
 
@@ -94,6 +96,21 @@ async function createRunningSession(ctx: Awaited<ReturnType<typeof createContext
   const session = await ctx.sessionManager.create('openclaw');
   await ctx.sessionManager.start(session.id);
   return session;
+}
+
+async function waitForPendingRequest(
+  ctx: Awaited<ReturnType<typeof createContext>>,
+  sessionId: string,
+  attempts = 20,
+) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const pending = ctx.hitlArbiter.getPendingRequests(sessionId);
+    if (pending.length > 0) {
+      return pending[0];
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for HITL request for session ${sessionId}`);
 }
 
 describe('Control-plane boundary routes', () => {
@@ -481,6 +498,76 @@ describe('Control-plane boundary routes', () => {
           .getEvents(session.id)
           .some((event) => event.type === 'user.command' && event.payload.command === 'cron hello'),
       ).toBe(true);
+    } finally {
+      await ctx.app.close();
+      ctx.eventStore.close();
+    }
+  });
+
+  it('returns modifiedArgs from /hitl/gate when the reviewer edits tool parameters', async () => {
+    const ctx = await createContext();
+
+    try {
+      const session = await createRunningSession(ctx);
+      const responsePromise = ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/hitl/gate`,
+        payload: {
+          correlationId: 'corr-hitl-mod-1',
+          toolName: 'exec',
+          toolInput: { command: 'rm -rf /tmp/bad' },
+          riskScore: 88,
+          triggeredRules: ['destructive_rm'],
+        },
+      });
+
+      const pending = await waitForPendingRequest(ctx, session.id);
+      ctx.hitlArbiter.decide(pending.id, 'modified', {
+        command: 'rm -rf /workspace/safe-scratch',
+      });
+
+      const response = await responsePromise;
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        verdict: 'modified',
+        modifiedArgs: {
+          command: 'rm -rf /workspace/safe-scratch',
+        },
+      });
+    } finally {
+      await ctx.app.close();
+      ctx.eventStore.close();
+    }
+  });
+
+  it('uses modified host-tool args returned by HITL before calling the MCP gateway', async () => {
+    const ctx = await createContext();
+
+    try {
+      const session = await createRunningSession(ctx);
+      const callToolSpy = vi
+        .spyOn(ctx.mcpGateway, 'callTool')
+        .mockResolvedValue({ exitCode: 0, stdout: 'ok' });
+
+      const responsePromise = ctx.app.inject({
+        method: 'POST',
+        url: `/api/sessions/${session.id}/mcp/call`,
+        payload: {
+          toolName: 'browser.open',
+          args: { url: 'https://danger.example.com' },
+        },
+      });
+
+      const pending = await waitForPendingRequest(ctx, session.id);
+      ctx.hitlArbiter.decide(pending.id, 'modified', {
+        args: { url: 'https://safe.example.com' },
+      });
+
+      const response = await responsePromise;
+      expect(response.statusCode).toBe(200);
+      expect(callToolSpy).toHaveBeenCalledWith('browser.open', {
+        url: 'https://safe.example.com',
+      });
     } finally {
       await ctx.app.close();
       ctx.eventStore.close();

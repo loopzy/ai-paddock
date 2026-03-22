@@ -420,7 +420,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps) {
     const { sessionId } = req.params;
     const { toolName, toolInput, riskScore, triggeredRules } = req.body;
     const decision = await hitlArbiter.requestApproval(sessionId, toolName, toolInput, `Security engine risk score: ${riskScore}. Rules: ${triggeredRules.join(', ')}`);
-    return { verdict: decision.verdict };
+    return { verdict: decision.verdict, modifiedArgs: decision.modifiedArgs };
   });
 
   // ─── Kill Switch ───
@@ -471,7 +471,7 @@ export function registerRoutes(app: FastifyInstance, deps: Deps) {
   app.post<{ Params: { sessionId: string }; Body: { tool?: string; toolName?: string; args: string | string[] | Record<string, unknown> } }>('/api/sessions/:sessionId/mcp/call', async (req, reply) => {
     const { sessionId } = req.params;
     const tool = req.body.toolName ?? req.body.tool ?? '';
-    const { args } = req.body;
+    let { args } = req.body;
     const boundary = classifyToolBoundary(tool);
     if (boundary === 'sandbox-local' || boundary === 'control-plane-routed' || boundary === 'disabled') {
       reply.code(400);
@@ -480,6 +480,12 @@ export function registerRoutes(app: FastifyInstance, deps: Deps) {
     if (hitlArbiter.requiresApproval(`host.${tool}`)) {
       const decision = await hitlArbiter.requestApproval(sessionId, `host.${tool}`, { args }, 'Host-side tool call requires approval');
       if (decision.verdict === 'rejected') return { stderr: 'Tool call rejected by user', exitCode: 1 };
+      if (decision.verdict === 'modified') {
+        if (!decision.modifiedArgs || !('args' in decision.modifiedArgs)) {
+          return { stderr: 'Tool call modification was missing updated arguments', exitCode: 1 };
+        }
+        args = decision.modifiedArgs.args as string | string[] | Record<string, unknown>;
+      }
     }
     const result = await mcpGateway.callTool(tool, args);
     eventStore.append(sessionId, 'tool.result', { toolName: `host.${tool}`, result });

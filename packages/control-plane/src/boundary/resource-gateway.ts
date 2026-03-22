@@ -51,7 +51,7 @@ export class ResourceGateway {
 
   private async handleHostTool(req: ResourceRequest): Promise<ResourceResponse> {
     const tool = req.tool ?? '';
-    const args = req.args ?? '';
+    let args = req.args ?? '';
 
     // HITL check
     if (this.hitlArbiter.requiresApproval(`host.${tool}`)) {
@@ -60,6 +60,16 @@ export class ResourceGateway {
       );
       if (decision.verdict === 'rejected') {
         return { status: 403, body: 'Tool call rejected by user', exitCode: 1 };
+      }
+      if (decision.verdict === 'modified') {
+        if (!decision.modifiedArgs || !('args' in decision.modifiedArgs)) {
+          return { status: 400, body: 'Tool call modification was missing updated arguments', exitCode: 1 };
+        }
+        const modifiedArgs = decision.modifiedArgs.args;
+        if (typeof modifiedArgs !== 'string' && !Array.isArray(modifiedArgs)) {
+          return { status: 400, body: 'Tool call modification must provide string or string[] arguments', exitCode: 1 };
+        }
+        args = modifiedArgs;
       }
     }
 
